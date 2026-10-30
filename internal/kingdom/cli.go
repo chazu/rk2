@@ -21,7 +21,7 @@ rk config [--repo NAME] [--command JSON] [--check JSON] [--max-rats N]
 rk spawn rat|king [--repo NAME] [--task ID] [--name NAME]
 rk list [--repo NAME]                    all runs if --repo is omitted
 rk show RUN
-rk attach RUN
+rk attach|at RUN                       RUN may be 'king': one king, system-wide
 rk logs RUN
 rk prime [RUN]                          print role/task instructions
 rk stop RUN                            retain all work
@@ -85,6 +85,9 @@ func Main(args []string, w io.Writer) error {
 	}
 	cmd := args[0]
 	args = args[1:]
+	if cmd == "at" {
+		cmd = "attach"
+	}
 	if cmd == "version" {
 		_, e := fmt.Fprintln(w, "rat-kingdom 0.1.0")
 		return e
@@ -178,6 +181,17 @@ func Main(args []string, w io.Writer) error {
 		}
 		return "", errors.New("run ID required")
 	}
+	// "king" always means the one king, including one spawned under an older name.
+	resolve := func(id string) (string, error) {
+		if id != "king" {
+			return id, nil
+		}
+		r, e := s.King()
+		if e != nil {
+			return "", e
+		}
+		return r.ID, nil
+	}
 	if os.Getenv("RK_ROLE") == "rat" {
 		switch cmd {
 		case "finish", "block", "inbox", "prime", "show", "logs", "wait":
@@ -261,6 +275,9 @@ func Main(args []string, w io.Writer) error {
 		}
 	case "show", "stop", "resume", "finish", "block", "inbox", "integrate", "clean", "logs", "attach", "prime":
 		id, err := one()
+		if err == nil {
+			id, err = resolve(id)
+		}
 		if err != nil {
 			return err
 		}
@@ -313,7 +330,11 @@ func Main(args []string, w io.Writer) error {
 		if len(pos) != 2 {
 			return errors.New("usage: rk tell RUN MESSAGE")
 		}
-		e = s.Tell(pos[0], pos[1])
+		id, err := resolve(pos[0])
+		if err != nil {
+			return err
+		}
+		e = s.Tell(id, pos[1])
 		value = map[string]string{"message": "recorded"}
 	case "reconcile":
 		value, e = s.Reconcile()

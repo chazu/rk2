@@ -37,7 +37,7 @@ From a repository with an initial commit:
 rk init --check '["go","test","./..."]'
 rk task create "Implement the login validation" --description "Acceptance criteria..."
 rk spawn king
-rk attach king-my-repo
+rk attach king                       # or: rk at king
 ```
 
 `rk init` registers the repository, excludes the entire `/.beads/` directory in
@@ -172,7 +172,10 @@ rk list --repo other
 
 Commands resolve the registered canonical repository rather than assuming the
 current working directory is the target. Run IDs also identify their repository.
-A king can manage registered repositories using `--repo`.
+There is one king, system-wide, and it manages every registered repository
+using `--repo`. `rk spawn king` refuses while a king exists; resume a stopped
+king with `rk resume king`. `king` works as a run name in any command, and rats
+cannot use it.
 
 ## Publication and the guard boundary
 

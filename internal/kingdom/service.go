@@ -134,16 +134,15 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 	}
 	n := 0
 	for _, r := range rs {
-		if r.RepoID != repo.ID {
-			continue
+		// One king serves every repository; it is resumed, never respawned.
+		if r.Role == "king" && role == "king" {
+			if activeState(r) {
+				return nil, errors.New("king already active; use rk attach king")
+			}
+			return nil, errors.New("king already exists; use rk resume king")
 		}
-		if activeState(r) {
-			if r.Role == "king" && role == "king" {
-				return nil, errors.New("king already active; use attach or reconcile")
-			}
-			if r.Role == "rat" {
-				n++
-			}
+		if r.RepoID == repo.ID && r.Role == "rat" && activeState(r) {
+			n++
 		}
 	}
 	if role == "rat" && n >= repo.MaxRats {
@@ -169,11 +168,14 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 		names := []string{"Pip", "Moss", "Crumb", "Nettle", "Pebble", "Clover", "Soot", "Thimble"}
 		name = names[int(id[0])%len(names)] + "-" + id[:4]
 		if role == "king" {
-			name = "king-" + repo.Name
+			name = "king"
 		}
 	}
 	if !safeID(name) || strings.ContainsAny(name, " \t\n:") {
 		return nil, errors.New("invalid agent name")
+	}
+	if role == "rat" && name == "king" {
+		return nil, errors.New("the name king is reserved")
 	}
 	for _, r := range rs {
 		if r.Name == name && r.State != "cleaned" && r.State != "discarded" {
@@ -283,13 +285,13 @@ func (s *Store) Resume(id, message string) (*Run, error) {
 	}
 	active := 0
 	for _, other := range all {
-		if other.ID == r.ID || other.RepoID != r.RepoID || !activeState(other) {
+		if other.ID == r.ID || !activeState(other) {
 			continue
 		}
 		if r.Role == "king" && other.Role == "king" {
 			return nil, errors.New("another king is active")
 		}
-		if other.Role == "rat" {
+		if other.RepoID == r.RepoID && other.Role == "rat" {
 			active++
 		}
 	}

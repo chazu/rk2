@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestGitGuard(t *testing.T) {
@@ -249,5 +250,35 @@ func TestLocalBeadsExclusionCreatesMissingInfoDirectory(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "\n/.beads/\n") {
 		t.Fatalf("missing exclusion: %q", got)
+	}
+}
+func TestOneKingSystemWide(t *testing.T) {
+	home := t.TempDir()
+	s, _ := Open(home)
+	if _, e := s.King(); e == nil || !strings.Contains(e.Error(), "rk spawn king") {
+		t.Fatalf("expected spawn hint, got %v", e)
+	}
+	s.saveRepo(&Repo{ID: "r1", Name: "demo", Command: []string{"true"}, MaxRats: 1})
+	s.saveRepo(&Repo{ID: "r2", Name: "other", Command: []string{"true"}, MaxRats: 1})
+	now := time.Now()
+	// Legacy state may hold several kings; the active one wins over a newer stopped one.
+	s.saveRun(&Run{ID: "old", Name: "king-demo", Role: "king", RepoID: "r1", Process: "running", Created: now.Add(-time.Hour)})
+	s.saveRun(&Run{ID: "new", Name: "king-other", Role: "king", RepoID: "r2", Process: "exited", Created: now})
+	var out bytes.Buffer
+	if e := Main([]string{"show", "king", "--home", home}, &out); e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(out.String(), `"id": "old"`) {
+		t.Fatalf("resolved wrong king: %s", out.String())
+	}
+	if _, e := s.Spawn("other", "king", "", ""); e == nil || !strings.Contains(e.Error(), "rk attach king") {
+		t.Fatalf("second king allowed from another repo: %v", e)
+	}
+	s.saveRun(&Run{ID: "old", Name: "king-demo", Role: "king", RepoID: "r1", Process: "exited", Created: now.Add(-time.Hour)})
+	if _, e := s.Spawn("demo", "king", "", ""); e == nil || !strings.Contains(e.Error(), "rk resume king") {
+		t.Fatalf("stopped king not resumed: %v", e)
+	}
+	if _, e := s.Spawn("demo", "rat", "t1", "king"); e == nil || !strings.Contains(e.Error(), "reserved") {
+		t.Fatalf("rat took the king's name: %v", e)
 	}
 }

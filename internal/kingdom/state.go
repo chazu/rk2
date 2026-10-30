@@ -186,6 +186,28 @@ func (s *Store) Run(id string) (*Run, error) {
 	}
 	return found, nil
 }
+
+// King returns the system-wide king. State from before kings were unique may
+// hold several; the active one wins, then the most recently created.
+func (s *Store) King() (*Run, error) {
+	rs, e := s.Runs()
+	if e != nil {
+		return nil, e
+	}
+	var found *Run
+	for _, r := range rs {
+		if r.Role != "king" {
+			continue
+		}
+		if found == nil || activeState(r) && !activeState(found) || activeState(r) == activeState(found) && r.Created.After(found.Created) {
+			found = r
+		}
+	}
+	if found == nil {
+		return nil, errors.New("no king; use rk spawn king")
+	}
+	return found, nil
+}
 func (s *Store) Runs() ([]*Run, error) {
 	es, e := os.ReadDir(filepath.Join(s.Root, "runs"))
 	if e != nil {
