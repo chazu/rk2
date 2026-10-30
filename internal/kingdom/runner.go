@@ -16,20 +16,36 @@ import (
 	"time"
 )
 
+// tmuxGone reports whether a failed tmux command found no session or no server.
+func tmuxGone(e error, out []byte) bool {
+	var ee *exec.ExitError
+	if !errors.As(e, &ee) || ee.ExitCode() != 1 {
+		return false
+	}
+	text := string(out)
+	return strings.Contains(text, "can't find session") || strings.Contains(text, "no server running") || strings.Contains(text, "No such file or directory") || strings.Contains(text, "Connection refused")
+}
+
 func sessionExists(session string) (bool, error) {
 	cmd := exec.Command("tmux", "has-session", "-t", "="+session)
 	out, e := cmd.CombinedOutput()
 	if e == nil {
 		return true, nil
 	}
-	var ee *exec.ExitError
-	if errors.As(e, &ee) && ee.ExitCode() == 1 {
-		text := string(out)
-		if strings.Contains(text, "can't find session") || strings.Contains(text, "no server running") || strings.Contains(text, "No such file or directory") || strings.Contains(text, "Connection refused") {
-			return false, nil
-		}
+	if tmuxGone(e, out) {
+		return false, nil
 	}
 	return false, fmt.Errorf("tmux observation failed: %w: %s", e, out)
+}
+
+// killSession closes a session. A session that ended after it was observed,
+// possibly taking the last-session server with it, counts as closed.
+func killSession(session string) ([]byte, error) {
+	out, e := exec.Command("tmux", "kill-session", "-t", "="+session).CombinedOutput()
+	if e != nil && tmuxGone(e, out) {
+		return out, nil
+	}
+	return out, e
 }
 func (s *Store) prepare(repo *Repo, r *Run, exe string) error {
 	dir := s.runDir(r.ID)
@@ -262,7 +278,7 @@ func (s *Store) Stop(id string) (*Run, error) {
 			return nil, observationErr
 		}
 		if exists {
-			if out, stopErr := exec.Command("tmux", "kill-session", "-t", "="+r.Session).CombinedOutput(); stopErr != nil {
+			if out, stopErr := killSession(r.Session); stopErr != nil {
 				return nil, fmt.Errorf("stop terminal: %w: %s", stopErr, out)
 			}
 		}
@@ -292,7 +308,7 @@ func (s *Store) Stop(id string) (*Run, error) {
 		return nil, e
 	}
 	if exists {
-		if out, e := exec.Command("tmux", "kill-session", "-t", "="+r.Session).CombinedOutput(); e != nil {
+		if out, e := killSession(r.Session); e != nil {
 			return nil, fmt.Errorf("stop tmux: %w: %s", e, out)
 		}
 	}
