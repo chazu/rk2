@@ -131,6 +131,24 @@ dirty or unintegrated work. `clean --discard` deliberately deletes that worker's
 local work and releases its claim; use it only when the user asked to discard
 that work. No cleanup operation deletes remote branches.
 
+A discarded task stays open and unclaimed, ready for another rat. When it
+should not be retried—abandoned, a duplicate, or won't-do—the king closes it
+without integration:
+
+```sh
+rk clean RUN --discard
+rk task --repo NAME close TASK --reason "Duplicate of TASK-2"
+```
+
+The reason is required and is recorded in a transition comment saying the king
+closed the task without integration. Closing is refused while any run of that
+task is working, ready, blocked, integrated but not cleaned, or in any state
+other than discarded or cleaned; the error names those runs, which must be
+stopped and integrated, or discarded, first. It is also refused while the task
+is claimed outside any run. Closing an already-closed task is an error and
+changes nothing. Rats cannot close tasks, and `br close` stays denied in
+managed sessions.
+
 ## Recovery and messages
 
 ```sh
@@ -221,7 +239,8 @@ Managed sessions receive:
 - A session-only pre-push hook, without rewriting repository configuration.
   Other existing hooks remain available.
 - For Claude, a shell-tool hook that rejects common direct Git bypasses.
-- Role checks preventing rats from invoking publication and coordinator commands.
+- Role checks preventing rats from invoking publication and coordinator
+  commands, including `rk task close`.
 
 These are executable operational guards, **not a hostile-code sandbox**. An
 agent with unrestricted shell access under your account can deliberately evade
@@ -238,6 +257,7 @@ The acceptance suite exercises real claims, launch failure after claiming,
 concurrent claim attempts, process stop and launcher-crash recovery, nonzero
 exit receipts, untracked-file preservation, blocked outcomes, comment retry and
 deduplication, integration conflicts, failed checks, ticket-closure retry,
+king closure without integration and its refusals,
 checked-out-target protection, and normal command guards.
 
 The publication command's authorized argument construction is tested against a

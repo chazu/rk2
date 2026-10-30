@@ -38,6 +38,7 @@ rk reconcile                           recover observations and retry comments
 rk integrate RUN                       reviewed result -> local target -> close
 rk clean RUN [--discard]                discard requires explicit user intent
 rk task [--repo NAME] COMMAND...        curated local Beads operations
+rk task [--repo NAME] close TASK --reason TEXT   king only: close without integration
 rk publish --repo NAME --remote NAME --branch BRANCH --request TEXT
 
 All commands accept --home PATH and --json. No sync or Git-notes functionality.
@@ -74,6 +75,34 @@ func reorder(fs *flag.FlagSet, args []string) ([]string, error) {
 		}
 	}
 	return append(opts, pos...), nil
+}
+
+// closeArgs parses rk task close TASK --reason TEXT.
+func closeArgs(args []string) (id, reason string, err error) {
+	const use = "usage: rk task [--repo NAME] close TASK --reason TEXT"
+	hasReason := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+		case a == "--reason":
+			if i+1 == len(args) {
+				return "", "", errors.New(use)
+			}
+			reason, hasReason = args[i+1], true
+			i++
+		case strings.HasPrefix(a, "--reason="):
+			reason, hasReason = strings.TrimPrefix(a, "--reason="), true
+		case strings.HasPrefix(a, "-") || id != "":
+			return "", "", errors.New(use)
+		default:
+			id = a
+		}
+	}
+	if id == "" || !hasReason {
+		return "", "", errors.New(use)
+	}
+	return id, reason, nil
 }
 func emit(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
@@ -356,7 +385,18 @@ func Main(args []string, w io.Writer) error {
 		return s.Watch(interval, w)
 	case "task":
 		if len(taskArgs) == 0 {
-			return errors.New("usage: rk task [--repo NAME] create|show|ready|list|comments|dep ...")
+			return errors.New("usage: rk task [--repo NAME] create|show|ready|list|comments|dep|close ...")
+		}
+		if taskArgs[0] == "close" {
+			if os.Getenv("RK_ROLE") == "rat" {
+				return errors.New("rats cannot close tasks; the king closes them")
+			}
+			id, reason, err := closeArgs(taskArgs[1:])
+			if err != nil {
+				return err
+			}
+			value, e = s.CloseTask(*repoName, id, reason)
+			break
 		}
 		allowed := " create show ready list comments dep blocked graph search stats "
 		if !strings.Contains(allowed, " "+taskArgs[0]+" ") {
