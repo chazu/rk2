@@ -237,7 +237,24 @@ printf 'guards-passed\\n' > guard-evidence.txt
     rk('clean', run['id'], '--discard')
     print('PASS launcher crash recovery and real nonzero exit receipt')
 
-    rk('config', '--repo', 'demo', '--command', '["/bin/sh","-c","exit 0"]', '--max-rats', '4')
+    # The agent owns the pane's terminal: it sees resizes and receives SIGWINCH.
+    resize = ("trap 'stty size > tty-size.local; exit 0' WINCH; : > ready.local; "
+              "i=0; while [ $i -lt 100 ]; do sleep .1; i=$((i+1)); done; exit 3")
+    rk('config', '--repo', 'demo', '--command', json.dumps(['/bin/sh', '-c', resize]), '--max-rats', '4')
+    run = data('spawn', 'rat', '--repo', 'demo', '--task', task('demo', 'follow pane size'))
+    ready = Path(run['worktree']) / 'ready.local'
+    until = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < until:
+        time.sleep(.1)
+    assert ready.exists(), runstate(run)
+    command(['tmux', 'resize-window', '-t', '=' + run['session'], '-x', '132', '-y', '40'])
+    final = wait_exit(run)
+    assert final['exit_code'] == 0, final
+    assert (Path(run['worktree']) / 'tty-size.local').read_text().split() == ['40', '132']
+    stopped(run); rk('clean', run['id'], '--discard')
+    print('PASS agent terminal follows tmux pane resize')
+
+    rk('config', '--repo', 'demo', '--command', '["/bin/sh","-c","exit 0"]')
     issue = task('demo', 'exclusive claim')
     def compete(_):
         return rk('spawn', 'rat', '--repo', 'demo', '--task', issue, ok=False)

@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -55,6 +54,32 @@ func isTerminal(f *os.File) bool {
 	var pgrp int32
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), uintptr(syscall.TIOCGPGRP), uintptr(unsafe.Pointer(&pgrp)))
 	return errno == 0
+}
+
+// reclaimTerminal makes the launcher's group foreground again after the agent exits.
+func reclaimTerminal(f *os.File) {
+	signal.Ignore(syscall.SIGTTOU)
+	defer signal.Reset(syscall.SIGTTOU)
+	pgrp := int32(syscall.Getpgrp())
+	syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), uintptr(syscall.TIOCSPGRP), uintptr(unsafe.Pointer(&pgrp)))
+}
+
+// pipePane records the launcher's tmux pane output in logfile.
+func pipePane(logfile string) error {
+	pane := os.Getenv("TMUX_PANE")
+	if pane == "" {
+		return errors.New("launcher is not running in a tmux pane; cannot record log")
+	}
+	f, e := os.OpenFile(logfile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if e != nil {
+		return e
+	}
+	f.Close()
+	out, e := exec.Command("tmux", "pipe-pane", "-t", pane, "exec cat >> "+quote(logfile)).CombinedOutput()
+	if e != nil {
+		return fmt.Errorf("tmux pipe-pane: %w: %s", e, out)
+	}
+	return nil
 }
 func (s *Store) prepare(repo *Repo, r *Run, exe string) error {
 	dir := s.runDir(r.ID)
@@ -198,12 +223,9 @@ func (s *Store) RunProcess(id string, attempt int) error {
 		args = append(args, "--settings", filepath.Join(s.runDir(id), "claude-settings.json"))
 	}
 	logfile := filepath.Join(s.runDir(id), fmt.Sprintf("attempt-%d.log", attempt))
-	var cmd *exec.Cmd
-	if runtime.GOOS == "darwin" {
-		cmd = exec.Command("/usr/bin/script", append([]string{"-q", logfile}, args...)...)
-	} else {
-		cmd = exec.Command("script", "--quiet", "--return", "--flush", "--command", shellCommand(args), logfile)
-	}
+	// The agent runs directly on the pane's terminal, so it follows pane resizes.
+	// A wrapper PTY (script) would stay at its initial size on macOS.
+	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = r.Worktree
 	cmd.Env = s.runEnv(repo, r)
 	cmd.Stdin = os.Stdin
@@ -211,7 +233,8 @@ func (s *Store) RunProcess(id string, attempt int) error {
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// The agent's own process group must own the terminal, or keystrokes from
-	// rk attach reach the launcher instead of the agent.
+	// rk attach reach the launcher instead of the agent. The foreground group
+	// also receives SIGWINCH when the pane is resized.
 	if isTerminal(os.Stdin) {
 		cmd.SysProcAttr.Foreground = true
 		cmd.SysProcAttr.Ctty = int(os.Stdin.Fd())
@@ -220,7 +243,10 @@ func (s *Store) RunProcess(id string, attempt int) error {
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer signal.Stop(sig)
-	runErr := cmd.Start()
+	runErr := pipePane(logfile)
+	if runErr == nil {
+		runErr = cmd.Start()
+	}
 	code := 1
 	if runErr == nil {
 		updateUnlock, updateErr := s.lock()
@@ -258,6 +284,9 @@ func (s *Store) RunProcess(id string, attempt int) error {
 		close(quit)
 		if cmd.ProcessState != nil {
 			code = cmd.ProcessState.ExitCode()
+		}
+		if cmd.SysProcAttr.Foreground {
+			reclaimTerminal(os.Stdin)
 		}
 	}
 	unlock, e = s.lock()
@@ -305,8 +334,8 @@ func (s *Store) Stop(id string) (*Run, error) {
 		}
 	}
 	if alive {
-		// The script process owns the PTY. Closing it also hangs up the agent,
-		// even if the launcher was killed and cannot forward a signal.
+		// The agent leads its own process group on the pane's terminal. Closing
+		// the session also hangs it up, even if the launcher was killed.
 		if r.ChildPID > 0 {
 			if signalErr := syscall.Kill(-r.ChildPID, syscall.SIGTERM); signalErr != nil && !errors.Is(signalErr, syscall.ESRCH) {
 				return nil, signalErr

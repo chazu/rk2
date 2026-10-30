@@ -11,8 +11,9 @@ synchronization subsystem, or Git-notes functionality.
 ## Build and check
 
 Requirements: Go 1.24+, Git, tmux, Rust Beads (`br`), and an agent CLI. The default
-agent command is Claude Code. macOS and Linux launchers use the system `script`
-utility to retain a real terminal while recording logs. macOS is acceptance-tested;
+agent command is Claude Code. The agent runs directly on its tmux pane's terminal,
+as the foreground process group, so it follows pane resizes and receives keyboard
+signals; `tmux pipe-pane` records each attempt's log. macOS is acceptance-tested;
 Linux support is implemented but has not been exercised on a Linux host.
 
 ```sh
