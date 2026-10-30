@@ -584,6 +584,52 @@ func closeIntegrated(repo *Repo, r *Run) error {
 	}
 	return e
 }
+
+// CloseTask closes a task without integration, e.g. after rk clean --discard or
+// for duplicate or abandoned work. It refuses while any run of the task could
+// still hold a claim or unintegrated work, and when the task is already closed.
+func (s *Store) CloseTask(repoName, id, reason string) (*Task, error) {
+	unlock, e := s.lock()
+	if e != nil {
+		return nil, e
+	}
+	defer unlock()
+	repo, e := s.Repo(repoName)
+	if e != nil {
+		return nil, e
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, errors.New("--reason is required to close a task without integration")
+	}
+	t, e := getTask(repo, id)
+	if e != nil {
+		return nil, e
+	}
+	if t.Status == "closed" {
+		return nil, fmt.Errorf("task %s is already closed; nothing changed", id)
+	}
+	rs, e := s.Runs()
+	if e != nil {
+		return nil, e
+	}
+	blocking := []string{}
+	for _, r := range rs {
+		if r.RepoID == repo.ID && r.Task == id && r.State != "discarded" && r.State != "cleaned" {
+			blocking = append(blocking, fmt.Sprintf("%s (%s, %s, process %s)", r.ID, r.Name, r.State, r.Process))
+		}
+	}
+	if len(blocking) > 0 {
+		return nil, fmt.Errorf("task %s has runs that may hold its claim or work: %s; stop and integrate them, or rk clean RUN --discard them first", id, strings.Join(blocking, ", "))
+	}
+	if t.Assignee != "" {
+		return nil, fmt.Errorf("task %s is %s, claimed by %q outside any open run; release that claim first", id, t.Status, t.Assignee)
+	}
+	if _, e = beads(repo, "king", "close", id, "--reason", reason, "--transition-comment", "Closed by the king without integration: "+reason); e != nil {
+		return nil, e
+	}
+	return getTask(repo, id)
+}
 func parseCommand(s string) ([]string, error) {
 	var args []string
 	if e := json.Unmarshal([]byte(s), &args); e != nil {

@@ -3,6 +3,7 @@ package kingdom
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -345,5 +346,31 @@ func TestDismissedKingMakesRoomForAFreshOne(t *testing.T) {
 	}
 	if _, e := s.Resume("k1", ""); e == nil || !strings.Contains(e.Error(), "finalized") {
 		t.Fatalf("dismissed king resumed: %v", e)
+	}
+}
+func TestTaskCloseArgumentsAndRole(t *testing.T) {
+	id, reason, e := closeArgs([]string{"bd-1", "--reason", "duplicate", "--json"})
+	if e != nil || id != "bd-1" || reason != "duplicate" {
+		t.Fatalf("got %q %q %v", id, reason, e)
+	}
+	if id, reason, e = closeArgs([]string{"--reason=won't do", "bd-2"}); e != nil || id != "bd-2" || reason != "won't do" {
+		t.Fatalf("got %q %q %v", id, reason, e)
+	}
+	for _, args := range [][]string{{"bd-1"}, {"--reason", "x"}, {"bd-1", "--reason"}, {"bd-1", "bd-2", "--reason", "x"}, {"bd-1", "--reason", "x", "--force"}} {
+		if _, _, e := closeArgs(args); e == nil || !strings.Contains(e.Error(), "usage") {
+			t.Errorf("accepted %v: %v", args, e)
+		}
+	}
+	home := t.TempDir()
+	t.Setenv("RK_ROLE", "rat")
+	t.Setenv("RK_RUN", "somerat")
+	e = Main([]string{"task", "--home", home, "close", "bd-1", "--reason", "abandoned"}, io.Discard)
+	if e == nil || !strings.Contains(e.Error(), "rats cannot close") {
+		t.Fatal(e)
+	}
+	t.Setenv("RK_ROLE", "")
+	t.Setenv("RK_RUN", "")
+	if e = Main([]string{"task", "--home", home, "close", "bd-1"}, io.Discard); e == nil || !strings.Contains(e.Error(), "usage") {
+		t.Fatal(e)
 	}
 }

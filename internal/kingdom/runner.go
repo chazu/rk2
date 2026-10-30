@@ -128,10 +128,11 @@ Review the exact reported commit and checks. Stop a finished rat with rk stop RU
 Integration runs the configured repository check, merges locally, and only then closes the task.
 Blocked work remains open. Use rk tell RUN MESSAGE or rk resume RUN --message TEXT for rework.
 Use rk clean RUN only after integration. Never discard useful work without the user's explicit request.
+To close a task without integration (after rk clean RUN --discard, or a duplicate or won't-do task): rk task --repo %s close TASK --reason TEXT. It refuses while any run of the task is not discarded or cleaned.
 There is no steward and no autonomous review/dismissal agent.
 Only when the user specifically asks you to push: rk publish --repo %s --remote NAME --branch BRANCH --request 'the user request'.
 Publication is limited to that branch and that operation. Never pass publication authority to rats.
-`, repo.Name, repo.Name, repo.Name), nil
+`, repo.Name, repo.Name, repo.Name, repo.Name), nil
 	}
 	t, e := getTask(repo, r.Task)
 	if e != nil {

@@ -135,6 +135,30 @@ try:
     assert data('task', '--repo', 'demo', 'show', issue)[0]['status'] == 'open'
     print('PASS blocked outcome does not close ticket; explicit discard releases claim')
 
+    # The king closes a discarded task without integration; nothing else may.
+    def close(task_id, *args, extra=None):
+        return rk('task', '--repo', 'demo', 'close', task_id, *args, ok=False, extra=extra)
+    assert 'usage' in close(issue).stderr
+    assert '--reason is required' in close(issue, '--reason', '  ').stderr
+    denied = close(issue, '--reason', 'abandoned', extra={'RK_ROLE': 'rat', 'RK_RUN': run['id']})
+    assert denied.returncode and 'rats cannot close' in denied.stderr
+    assert data('task', '--repo', 'demo', 'show', issue)[0]['status'] == 'open'
+    live = data('spawn', 'rat', '--repo', 'demo', '--task', task('demo', 'ready result'))
+    wait_exit(live)
+    rk('finish', live['id'], '--summary', 'no changes', '--checks', 'fixture')
+    refused = close(live['task'], '--reason', 'not wanted')
+    assert refused.returncode and live['id'] in refused.stderr and 'discard' in refused.stderr
+    assert data('task', '--repo', 'demo', 'show', live['task'])[0]['status'] == 'in_progress'
+    stopped(live); rk('clean', live['id'], '--discard')
+    closed = data('task', '--repo', 'demo', 'close', issue, '--reason', 'abandoned after discard')
+    assert closed['status'] == 'closed', closed
+    notes = data('task', '--repo', 'demo', 'comments', 'list', issue)
+    assert any('without integration: abandoned after discard' in c['text'] for c in notes), notes
+    again = close(issue, '--reason', 'again')
+    assert again.returncode and 'already closed' in again.stderr
+    assert data('task', '--repo', 'demo', 'show', issue)[0]['status'] == 'closed'
+    print('PASS king closes discarded task with reason; live runs, rats, no reason, re-close refused')
+
     # Fail startup after ownership has been acquired, then resume that same run.
     issue = task('demo', 'recover failed startup')
     (root / 'badpath').mkdir()
