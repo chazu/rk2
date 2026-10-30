@@ -16,7 +16,7 @@ func cleanEnv(extra map[string]string) []string {
 	env := []string{}
 	for _, v := range os.Environ() {
 		k, _, _ := strings.Cut(v, "=")
-		if strings.HasPrefix(k, "GIT_") || strings.HasPrefix(k, "BEADS_") || strings.HasPrefix(k, "BD_") || strings.HasPrefix(k, "BR_") || k == "RK_RUN" || k == "RK_ROLE" {
+		if strings.HasPrefix(k, "GIT_") || strings.HasPrefix(k, "BEADS_") || strings.HasPrefix(k, "BD_") || strings.HasPrefix(k, "BR_") || k == "RK_RUN" || k == "RK_ROLE" || k == "RK_REPO" {
 			continue
 		}
 		if _, ok := extra[k]; !ok {

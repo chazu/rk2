@@ -198,6 +198,19 @@ using `--repo`. `rk spawn king` refuses while a king exists; resume a stopped
 king with `rk resume king`, or `rk dismiss king` to replace it. `king` works as a run name in any command, and rats
 cannot use it.
 
+The king's prompt names no repository. It tells the king to discover
+repositories with `rk repos` and to pass `--repo NAME`. Its working directory
+is the repository it was launched from, but its environment carries no
+`BEADS_DIR` or `RK_REPO`, so it reaches tasks through `rk task --repo NAME`.
+Rats keep both, since each one serves a single repository.
+
+The king's role instructions are embedded in `rk`. To customize them, put a
+replacement at `$RK_HOME/instructions/king.txt` (default
+`~/.rat-kingdom/instructions/king.txt`). The identity line and shared safety
+rules are always prepended and cannot be overridden. A prompt is written when a
+run launches, so `rk restart king` picks up a change. `rk prime king` prints the
+result.
+
 ## Publication and the guard boundary
 
 Only after the user specifically asks the king to push:

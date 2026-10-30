@@ -347,3 +347,40 @@ func TestDismissedKingMakesRoomForAFreshOne(t *testing.T) {
 		t.Fatalf("dismissed king resumed: %v", e)
 	}
 }
+func TestKingPromptNamesNoRepository(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	repo := &Repo{ID: "r1", Name: "launchrepo", BeadsDir: "/x/launchrepo/.beads"}
+	king := &Run{ID: "k1", Name: "king", Role: "king", RepoID: "r1"}
+	text, e := s.Prompt(repo, king)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if strings.Contains(text, "launchrepo") || strings.Contains(text, "Repository:") {
+		t.Fatalf("king prompt names a repository:\n%s", text)
+	}
+	for _, want := range []string{"rk repos", "--repo NAME", "Run ID: k1", "Do not push"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("king prompt lacks %q:\n%s", want, text)
+		}
+	}
+	for _, kv := range s.runEnv(repo, king) {
+		if strings.HasPrefix(kv, "BEADS_DIR=") || strings.HasPrefix(kv, "RK_REPO=") {
+			t.Fatalf("king environment binds a repository: %s", kv)
+		}
+	}
+	// A user copy replaces the role instructions but not the shared rules.
+	os.MkdirAll(filepath.Join(s.Root, "instructions"), 0700)
+	os.WriteFile(filepath.Join(s.Root, "instructions", "king.txt"), []byte("CUSTOM KING\n"), 0600)
+	text, e = s.Prompt(repo, king)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if !strings.Contains(text, "CUSTOM KING") || strings.Contains(text, "RESPONSIBILITIES") || !strings.Contains(text, "Do not push") {
+		t.Fatalf("override not applied as expected:\n%s", text)
+	}
+	rat := &Run{ID: "rat1", Name: "Pip", Role: "rat", RepoID: "r1"}
+	env := strings.Join(s.runEnv(repo, rat), "\n")
+	if !strings.Contains(env, "BEADS_DIR=/x/launchrepo/.beads") || !strings.Contains(env, "RK_REPO=r1") {
+		t.Fatalf("rat lost its repository environment:\n%s", env)
+	}
+}

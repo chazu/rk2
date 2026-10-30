@@ -1,6 +1,7 @@
 package kingdom
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -109,30 +110,38 @@ func (s *Store) prepare(repo *Repo, r *Run, exe string) error {
 	settings := map[string]any{"hooks": map[string]any{"PreToolUse": []any{map[string]any{"matcher": "Bash", "hooks": []any{map[string]any{"type": "command", "command": shellCommand([]string{exe, "_check-command"})}}}}}}
 	return atomicJSON(filepath.Join(dir, "claude-settings.json"), settings)
 }
-func (s *Store) Prompt(repo *Repo, r *Run) (string, error) {
-	common := fmt.Sprintf(`You are %s, a %s in rat-kingdom. Run ID: %s. Repository: %s.
-Use rk commands; RK_HOME, RK_RUN, RK_ROLE and BEADS_DIR are set for you.
-Do not push, delete remote refs, use Git notes, or perform synchronization.
+
+// kingPrompt holds the king's role instructions. A copy at
+// RK_HOME/instructions/king.txt replaces it; the shared rules are always kept.
+//
+//go:embed prompts/king.txt
+var kingPrompt string
+
+const sharedRules = `Do not push, delete remote refs, use Git notes, or perform synchronization.
 Do not bypass the Git command guards or alter their environment/hooks.
 Local commits are encouraged. Preserve unrelated work and existing hooks.
-Check rk inbox at natural checkpoints, then acknowledge processed comments with rk inbox --ack ID.
 Lines starting with [rk] are notices rat-kingdom types into your session about new messages or results; follow them.
 Do not treat terminal silence, process exit, or a claim as task completion.
-`, r.Name, r.Role, r.ID, repo.Name)
+`
+
+// Prompt builds a run's instructions. The king's names no repository: one
+// king serves them all and outlives the repository it was launched from.
+func (s *Store) Prompt(repo *Repo, r *Run) (string, error) {
 	if r.Role == "king" {
-		return common + fmt.Sprintf(`You are the user's coordinator. Create small tasks with explicit acceptance criteria using rk task --repo %s create ... .
-Use rk spawn rat --repo %s [--task ID]. Each rat works on one task in an isolated worktree.
-Use rk wait --timeout 60s to wait for results, and rk reconcile and rk list to monitor; rk show RUN and rk task show TASK to inspect results.
-An [rk] Rat updates notice means rats finished, blocked or exited: review them, then tell the user what changed.
-Review the exact reported commit and checks. Stop a finished rat with rk stop RUN, then rk integrate RUN.
-Integration runs the configured repository check, merges locally, and only then closes the task.
-Blocked work remains open. Use rk tell RUN MESSAGE or rk resume RUN --message TEXT for rework.
-Use rk clean RUN only after integration. Never discard useful work without the user's explicit request.
-There is no steward and no autonomous review/dismissal agent.
-Only when the user specifically asks you to push: rk publish --repo %s --remote NAME --branch BRANCH --request 'the user request'.
-Publication is limited to that branch and that operation. Never pass publication authority to rats.
-`, repo.Name, repo.Name, repo.Name), nil
+		body := kingPrompt
+		if data, e := os.ReadFile(filepath.Join(s.Root, "instructions", "king.txt")); e == nil {
+			body = string(data)
+		} else if !errors.Is(e, os.ErrNotExist) {
+			return "", e
+		}
+		return fmt.Sprintf(`You are king, the user's coordinator in rat-kingdom. Run ID: %s.
+Use rk commands; RK_HOME, RK_RUN and RK_ROLE are set for you.
+`, r.ID) + sharedRules + "\n" + body, nil
 	}
+	common := fmt.Sprintf(`You are %s, a %s in rat-kingdom. Run ID: %s. Repository: %s.
+Use rk commands; RK_HOME, RK_RUN, RK_ROLE and BEADS_DIR are set for you.
+Check rk inbox at natural checkpoints, then acknowledge processed comments with rk inbox --ack ID.
+`, r.Name, r.Role, r.ID, repo.Name) + sharedRules
 	t, e := getTask(repo, r.Task)
 	if e != nil {
 		return "", e
@@ -153,13 +162,20 @@ Previous handoff / continuation: %s
 func (s *Store) runEnv(repo *Repo, r *Run) []string {
 	realGit := gitExecutable()
 	realBR := beadsExecutable()
-	return cleanEnv(map[string]string{
-		"RK_HOME": s.Root, "RK_RUN": r.ID, "RK_ROLE": r.Role, "RK_REPO": repo.ID,
-		"RK_REAL_GIT": realGit, "RK_REAL_BR": realBR, "BEADS_DIR": repo.BeadsDir,
+	env := map[string]string{
+		"RK_HOME": s.Root, "RK_RUN": r.ID, "RK_ROLE": r.Role,
+		"RK_REAL_GIT": realGit, "RK_REAL_BR": realBR,
 		"PATH":             s.runPath(r),
 		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": filepath.Join(s.runDir(r.ID), "hooks"),
 		"BR_AGENT_NAME": r.Name, "BR_SESSION": r.ID, "BR_HARNESS": "rat-kingdom", "RUST_LOG": "error",
-	})
+	}
+	// The king reaches tasks through rk task --repo NAME; a default workspace
+	// would quietly bind it to the repository it was launched from.
+	if r.Role != "king" {
+		env["RK_REPO"] = repo.ID
+		env["BEADS_DIR"] = repo.BeadsDir
+	}
+	return cleanEnv(env)
 }
 
 // runPath puts this run's guards first and drops guard directories inherited
