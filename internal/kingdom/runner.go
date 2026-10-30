@@ -131,10 +131,23 @@ func (s *Store) runEnv(repo *Repo, r *Run) []string {
 	return cleanEnv(map[string]string{
 		"RK_HOME": s.Root, "RK_RUN": r.ID, "RK_ROLE": r.Role, "RK_REPO": repo.ID,
 		"RK_REAL_GIT": realGit, "RK_REAL_BR": realBR, "BEADS_DIR": repo.BeadsDir,
-		"PATH":             filepath.Join(s.runDir(r.ID), "bin") + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"PATH":             s.runPath(r),
 		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": filepath.Join(s.runDir(r.ID), "hooks"),
 		"BR_AGENT_NAME": r.Name, "BR_SESSION": r.ID, "BR_HARNESS": "rat-kingdom", "RUST_LOG": "error",
 	})
+}
+
+// runPath puts this run's guards first and drops guard directories inherited
+// from other runs, such as the king that spawned this one.
+func (s *Store) runPath(r *Run) string {
+	dirs := []string{filepath.Join(s.runDir(r.ID), "bin")}
+	runs := filepath.Join(s.Root, "runs") + string(os.PathSeparator)
+	for _, d := range filepath.SplitList(os.Getenv("PATH")) {
+		if !strings.HasPrefix(d, runs) {
+			dirs = append(dirs, d)
+		}
+	}
+	return strings.Join(dirs, string(os.PathListSeparator))
 }
 func (s *Store) RunProcess(id string, attempt int) error {
 	r, e := s.Run(id)

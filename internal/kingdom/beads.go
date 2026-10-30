@@ -25,13 +25,7 @@ type Comment struct {
 	Text   string `json:"text"`
 }
 
-func beadsExecutable() string {
-	if p := os.Getenv("RK_REAL_BR"); p != "" {
-		return p
-	}
-	p, _ := exec.LookPath("br")
-	return p
-}
+func beadsExecutable() string { return realExecutable("RK_REAL_BR", "br") }
 func beads(repo *Repo, actor string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -195,6 +189,9 @@ func GuardedBeads(args []string) error {
 	p := os.Getenv("RK_REAL_BR")
 	if p == "" {
 		return errors.New("missing managed Beads executable")
+	}
+	if isGuard(p) {
+		return errors.New("managed Beads executable is the rk guard itself; restart the run")
 	}
 	args = append(args, "--no-auto-import", "--no-auto-flush", "--actor", os.Getenv("RK_RUN"))
 	cmd := exec.Command(p, args...)

@@ -28,12 +28,39 @@ func cleanEnv(extra map[string]string) []string {
 	}
 	return env
 }
-func gitExecutable() string {
-	if p := os.Getenv("RK_REAL_GIT"); p != "" {
+func gitExecutable() string { return realExecutable("RK_REAL_GIT", "git") }
+
+// realExecutable finds the real binary behind a guard. A run launched from a
+// managed session inherits that session's guard directory on PATH (tmux copies
+// the client's PATH), and a guard that resolves to itself execs itself forever.
+func realExecutable(env, name string) string {
+	if p := os.Getenv(env); p != "" && !isGuard(p) {
 		return p
 	}
-	p, _ := exec.LookPath("git")
-	return p
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		p, e := exec.LookPath(filepath.Join(dir, name))
+		if e == nil && !isGuard(p) {
+			return p
+		}
+	}
+	return ""
+}
+
+// isGuard reports whether p is the running rk executable, under any name.
+func isGuard(p string) bool {
+	exe, e := os.Executable()
+	if e != nil {
+		return false
+	}
+	self, e := os.Stat(exe)
+	if e != nil {
+		return false
+	}
+	other, e := os.Stat(p)
+	return e == nil && os.SameFile(self, other)
 }
 func gitOutput(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -175,6 +202,9 @@ func GuardedGit(args []string) error {
 	p := os.Getenv("RK_REAL_GIT")
 	if p == "" {
 		return errors.New("missing managed Git executable")
+	}
+	if isGuard(p) {
+		return errors.New("managed Git executable is the rk guard itself; restart the run")
 	}
 	cmd := exec.Command(p, args...)
 	cmd.Stdin = os.Stdin

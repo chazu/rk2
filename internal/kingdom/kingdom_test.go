@@ -128,6 +128,40 @@ func TestGuardedWorkerCannotControlOtherRuns(t *testing.T) {
 		}
 	}
 }
+func TestInheritedGuardIsNotTheRealExecutable(t *testing.T) {
+	exe, e := os.Executable()
+	if e != nil {
+		t.Fatal(e)
+	}
+	guard, real := t.TempDir(), t.TempDir()
+	if e = os.Symlink(exe, filepath.Join(guard, "git")); e != nil {
+		t.Fatal(e)
+	}
+	if e = os.WriteFile(filepath.Join(real, "git"), []byte("#!/bin/sh\n"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("PATH", guard+string(os.PathListSeparator)+real)
+	t.Setenv("RK_REAL_GIT", filepath.Join(guard, "git"))
+	if p := gitExecutable(); p != filepath.Join(real, "git") {
+		t.Fatalf("resolved %q", p)
+	}
+	if e = GuardedGit([]string{"status"}); e == nil || !strings.Contains(e.Error(), "guard itself") {
+		t.Fatalf("guard exec'd itself: %v", e)
+	}
+	if env := strings.Join(launchEnv(), " "); !strings.Contains(env, "-e RK_REAL_GIT="+filepath.Join(real, "git")) {
+		t.Fatalf("launch env %q", env)
+	}
+}
+func TestRunPathDropsOtherRunsGuards(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	king := filepath.Join(s.Root, "runs", "king", "bin")
+	t.Setenv("PATH", king+string(os.PathListSeparator)+"/usr/bin")
+	got := s.runPath(&Run{ID: "rat"})
+	want := filepath.Join(s.Root, "runs", "rat", "bin") + string(os.PathListSeparator) + "/usr/bin"
+	if got != want {
+		t.Fatalf("PATH %q, want %q", got, want)
+	}
+}
 func TestPublishRequiresRequestBeforeGit(t *testing.T) {
 	s, _ := Open(t.TempDir())
 	if e := s.Publish("missing", "origin", "main", ""); e == nil || !strings.Contains(e.Error(), "request") {
