@@ -91,12 +91,14 @@ Do not push, delete remote refs, use Git notes, or perform synchronization.
 Do not bypass the Git command guards or alter their environment/hooks.
 Local commits are encouraged. Preserve unrelated work and existing hooks.
 Check rk inbox at natural checkpoints, then acknowledge processed comments with rk inbox --ack ID.
+Lines starting with [rk] are notices rat-kingdom types into your session about new messages or results; follow them.
 Do not treat terminal silence, process exit, or a claim as task completion.
 `, r.Name, r.Role, r.ID, repo.Name)
 	if r.Role == "king" {
 		return common + fmt.Sprintf(`You are the user's coordinator. Create small tasks with explicit acceptance criteria using rk task --repo %s create ... .
 Use rk spawn rat --repo %s [--task ID]. Each rat works on one task in an isolated worktree.
 Use rk wait --timeout 60s to wait for results, and rk reconcile and rk list to monitor; rk show RUN and rk task show TASK to inspect results.
+An [rk] Rat updates notice means rats finished, blocked or exited: review them, then tell the user what changed.
 Review the exact reported commit and checks. Stop a finished rat with rk stop RUN, then rk integrate RUN.
 Integration runs the configured repository check, merges locally, and only then closes the task.
 Blocked work remains open. Use rk tell RUN MESSAGE or rk resume RUN --message TEXT for rework.
@@ -227,6 +229,8 @@ func (s *Store) RunProcess(id string, attempt int) error {
 		}
 		done := make(chan error, 1)
 		go func() { done <- cmd.Wait() }()
+		quit := make(chan struct{})
+		go s.nudgeLoop(id, attempt, quit)
 		select {
 		case runErr = <-done:
 		case <-sig:
@@ -238,6 +242,7 @@ func (s *Store) RunProcess(id string, attempt int) error {
 				runErr = <-done
 			}
 		}
+		close(quit)
 		if cmd.ProcessState != nil {
 			code = cmd.ProcessState.ExitCode()
 		}

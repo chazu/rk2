@@ -17,7 +17,8 @@ for tool in ('git', 'br', 'tmux'):
 root = Path(tempfile.mkdtemp(prefix='rk-accept-', dir='/tmp'))
 env = {k: v for k, v in os.environ.items()
        if not k.startswith(('RK_', 'GIT_', 'BEADS_', 'BD_', 'BR_')) and k != 'TMUX'}
-env.update(RK_HOME=str(root / 'state'), TMUX_TMPDIR=str(root), RUST_LOG='error')
+env.update(RK_HOME=str(root / 'state'), TMUX_TMPDIR=str(root), RUST_LOG='error',
+           RK_NUDGE_INTERVAL='300ms')
 
 def command(args, cwd=None, ok=True, extra=None):
     p = subprocess.run(args, cwd=cwd, env={**env, **(extra or {})},
@@ -291,13 +292,50 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert git(other, 'status', '--porcelain') == ''
     print('PASS checked-out integration target is protected')
 
-    fixture('kingdom')
-    king = data('spawn', 'king', '--repo', 'kingdom')
+    # Scripted agents record every line typed into their terminal.
+    echo = root / 'echo-agent.py'
+    echo.write_text('import os, sys\n'
+                    f'path = {str(root)!r} + "/" + os.environ["RK_RUN"] + ".typed"\n'
+                    'while True:\n'
+                    '    line = sys.stdin.readline()\n'
+                    '    if not line:\n'
+                    '        break\n'
+                    '    with open(path, "a") as f:\n'
+                    '        f.write(line)\n')
+    def typed(run, text):
+        path = root / f"{run['id']}.typed"
+        until = time.monotonic() + 15
+        while time.monotonic() < until:
+            if path.exists() and text in path.read_text():
+                return path.read_text()
+            time.sleep(.1)
+        raise AssertionError(f'{text!r} never typed into {run["name"]}: {path.read_text() if path.exists() else ""}')
+    nudge = fixture('nudge')
+    rk('config', '--repo', 'nudge', '--command', json.dumps(['python3', str(echo)]))
+    king = data('spawn', 'king', '--repo', 'nudge')
+    rat = data('spawn', 'rat', '--repo', 'nudge', '--task', task('nudge', 'nudged work'))
+    # An unsent draft is cut to the start-of-line and kill-to-end keys before
+    # the notice. The scripted agent's cooked terminal records them literally.
+    until = time.monotonic() + 15
+    while runstate(rat)['process'] != 'running' and time.monotonic() < until:
+        time.sleep(.1)
+    time.sleep(1)  # script flushes pending input when it sets up its terminal
+    command(['tmux', 'send-keys', '-t', f"={rat['session']}:", '-l', 'half-typed draft'])
+    rk('tell', rat['id'], 'use the second approach')
+    assert 'half-typed draft\x01\x0b[rk] 1 new message(s)' in typed(rat, 'rk inbox')
+    wt = Path(rat['worktree'])
+    (wt / 'work.txt').write_text('work\n')
+    git(wt, 'add', 'work.txt')
+    git(wt, 'commit', '-m', 'work')
+    rk('finish', rat['id'], '--summary', 'done', '--checks', 'none needed')
+    typed(king, f"{rat['name']} (nudge) ready")
+    stopped(rat)
+    print('PASS notices typed into rat and king sessions reach the agent')
     restarted = data('restart', 'king')
     assert restarted['id'] == king['id'] and restarted['attempt'] == 2
     dismissed = data('dismiss', 'king')
     assert dismissed['state'] == 'dismissed' and dismissed['process'] == 'stopped'
-    fresh = data('spawn', 'king', '--repo', 'kingdom')
+    fresh = data('spawn', 'king', '--repo', 'nudge')
     assert fresh['id'] != king['id'] and data('show', 'king')['id'] == fresh['id']
     data('dismiss', 'king')
     print('PASS king restart, dismissal and fresh spawn')

@@ -158,9 +158,22 @@ acknowledge the highest processed comment ID. Reading does not acknowledge.
 
 `wait` returns actionable runs to the king, or unread task comments when given
 a run ID. It returns after at most 60 seconds, making it suitable for an agent's
-tool loop. `watch` displays changes continuously for a human. Neither types
-commands into a potentially unrelated terminal prompt. Messages do not forcibly
-interrupt an agent that is busy or waiting outside these commands.
+tool loop. `watch` displays changes continuously for a human.
+
+Agents also get notices typed into their own session, so one idle at its
+prompt still learns of new work. Each launcher checks every 5 seconds
+(`RK_NUDGE_INTERVAL`). It sends `Ctrl-A` `Ctrl-K` to cut any unsent draft on
+the input line (restore it with `Ctrl-Y`), types one `[rk]` line, then Enter:
+
+- A rat is told when task comments from others arrive past its acknowledged
+  cursor, such as an `rk tell` from the king.
+- The king is told when a rat becomes ready, blocked, startup-failed, or its
+  process exits; it then reviews with `rk wait`.
+
+Notices are text for the agent to read, never commands rk runs. A notice is
+held while someone attached to that session has typed within the interval, so
+it does not land in the middle of your input, and each change is announced
+once per launch. A busy agent sees the notice as its next message.
 
 All Beads operations target one canonical local workspace per repository.
 Automatic JSONL import and export are disabled for managed operations. There
