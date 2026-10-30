@@ -187,8 +187,9 @@ func (s *Store) Run(id string) (*Run, error) {
 	return found, nil
 }
 
-// King returns the system-wide king. State from before kings were unique may
-// hold several; the active one wins, then the most recently created.
+// King returns the system-wide king, ignoring dismissed ones. State from before
+// kings were unique may hold several; the active one wins, then the most
+// recently created.
 func (s *Store) King() (*Run, error) {
 	rs, e := s.Runs()
 	if e != nil {
@@ -196,7 +197,7 @@ func (s *Store) King() (*Run, error) {
 	}
 	var found *Run
 	for _, r := range rs {
-		if r.Role != "king" {
+		if r.Role != "king" || r.State == "dismissed" {
 			continue
 		}
 		if found == nil || activeState(r) && !activeState(found) || activeState(r) == activeState(found) && r.Created.After(found.Created) {

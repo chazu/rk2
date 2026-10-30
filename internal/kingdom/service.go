@@ -135,11 +135,11 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 	n := 0
 	for _, r := range rs {
 		// One king serves every repository; it is resumed, never respawned.
-		if r.Role == "king" && role == "king" {
+		if r.Role == "king" && role == "king" && r.State != "dismissed" {
 			if activeState(r) {
 				return nil, errors.New("king already active; use rk attach king")
 			}
-			return nil, errors.New("king already exists; use rk resume king")
+			return nil, errors.New("king already exists; use rk resume king, or rk dismiss king for a fresh one")
 		}
 		if r.RepoID == repo.ID && r.Role == "rat" && activeState(r) {
 			n++
@@ -178,7 +178,7 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 		return nil, errors.New("the name king is reserved")
 	}
 	for _, r := range rs {
-		if r.Name == name && r.State != "cleaned" && r.State != "discarded" {
+		if r.Name == name && r.State != "cleaned" && r.State != "discarded" && r.State != "dismissed" {
 			return nil, errors.New("agent name already in use")
 		}
 	}
@@ -265,7 +265,7 @@ func (s *Store) Resume(id, message string) (*Run, error) {
 	if e != nil {
 		return nil, e
 	}
-	if r.State == "integrated" || r.State == "cleaned" || r.State == "discarded" {
+	if r.State == "integrated" || r.State == "cleaned" || r.State == "discarded" || r.State == "dismissed" {
 		return nil, errors.New("cannot resume a finalized run")
 	}
 	alive, e := runAlive(s, r)
@@ -332,6 +332,46 @@ func (s *Store) Resume(id, message string) (*Run, error) {
 		return r, e
 	}
 	return r, nil
+}
+
+// Dismiss stops the king and retires its run so rk spawn king starts a fresh
+// one. The run record and logs are kept.
+func (s *Store) Dismiss(id string) (*Run, error) {
+	r, e := s.Run(id)
+	if e != nil {
+		return nil, e
+	}
+	if r.Role != "king" {
+		return nil, errors.New("only the king is dismissed; stop, integrate and clean rats")
+	}
+	if r.State == "dismissed" {
+		return r, nil
+	}
+	if r, e = s.Stop(id); e != nil {
+		return nil, e
+	}
+	unlock, e := s.lock()
+	if e != nil {
+		return nil, e
+	}
+	defer unlock()
+	current, e := s.Run(id)
+	if e != nil {
+		return nil, e
+	}
+	if current.Attempt != r.Attempt {
+		return nil, errors.New("king resumed concurrently; not dismissed")
+	}
+	current.State = "dismissed"
+	return current, s.saveRun(current)
+}
+
+// Restart stops a run and resumes it in its existing worktree.
+func (s *Store) Restart(id, message string) (*Run, error) {
+	if _, e := s.Stop(id); e != nil {
+		return nil, e
+	}
+	return s.Resume(id, message)
 }
 func (s *Store) Result(id, outcome, summary, checks string) (*Run, error) {
 	unlock, e := s.lock()

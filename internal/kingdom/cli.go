@@ -26,6 +26,8 @@ rk logs RUN
 rk prime [RUN]                          print role/task instructions
 rk stop RUN                            retain all work
 rk resume RUN [--message TEXT]         reuse worktree and claim
+rk restart RUN [--message TEXT]        stop, then resume
+rk dismiss king                        stop and retire the king; spawn a fresh one
 rk finish [RUN] --summary TEXT --checks TEXT
 rk block [RUN] --summary TEXT
 rk tell RUN MESSAGE                    durable task comment
@@ -118,7 +120,7 @@ func Main(args []string, w io.Writer) error {
 	case "spawn":
 		fs.StringVar(&name, "name", "", "agent name")
 		fs.StringVar(&task, "task", "", "task ID")
-	case "resume":
+	case "resume", "restart":
 		fs.StringVar(&message, "message", "", "continuation")
 	case "finish", "block":
 		fs.StringVar(&summary, "summary", "", "summary")
@@ -273,7 +275,7 @@ func Main(args []string, w io.Writer) error {
 			}
 			return nil
 		}
-	case "show", "stop", "resume", "finish", "block", "inbox", "integrate", "clean", "logs", "attach", "prime":
+	case "show", "stop", "resume", "restart", "dismiss", "finish", "block", "inbox", "integrate", "clean", "logs", "attach", "prime":
 		id, err := one()
 		if err == nil {
 			id, err = resolve(id)
@@ -288,6 +290,10 @@ func Main(args []string, w io.Writer) error {
 			value, e = s.Stop(id)
 		case "resume":
 			value, e = s.Resume(id, message)
+		case "restart":
+			value, e = s.Restart(id, message)
+		case "dismiss":
+			value, e = s.Dismiss(id)
 		case "finish":
 			value, e = s.Result(id, "ready", summary, checks)
 		case "block":

@@ -14,16 +14,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
-// tmuxGone reports whether a failed tmux command found no session or no server.
+// tmuxGone reports whether a failed tmux command found no session or no server,
+// including a server caught exiting after its last session closed.
 func tmuxGone(e error, out []byte) bool {
 	var ee *exec.ExitError
 	if !errors.As(e, &ee) || ee.ExitCode() != 1 {
 		return false
 	}
 	text := string(out)
-	return strings.Contains(text, "can't find session") || strings.Contains(text, "no server running") || strings.Contains(text, "No such file or directory") || strings.Contains(text, "Connection refused")
+	return strings.Contains(text, "can't find session") || strings.Contains(text, "no server running") || strings.Contains(text, "server exited unexpectedly") || strings.Contains(text, "no current target") || strings.Contains(text, "No such file or directory") || strings.Contains(text, "Connection refused")
 }
 
 func sessionExists(session string) (bool, error) {
@@ -46,6 +48,13 @@ func killSession(session string) ([]byte, error) {
 		return out, nil
 	}
 	return out, e
+}
+
+// isTerminal reports whether f is this process's controlling terminal.
+func isTerminal(f *os.File) bool {
+	var pgrp int32
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), uintptr(syscall.TIOCGPGRP), uintptr(unsafe.Pointer(&pgrp)))
+	return errno == 0
 }
 func (s *Store) prepare(repo *Repo, r *Run, exe string) error {
 	dir := s.runDir(r.ID)
@@ -186,6 +195,12 @@ func (s *Store) RunProcess(id string, attempt int) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The agent's own process group must own the terminal, or keystrokes from
+	// rk attach reach the launcher instead of the agent.
+	if isTerminal(os.Stdin) {
+		cmd.SysProcAttr.Foreground = true
+		cmd.SysProcAttr.Ctty = int(os.Stdin.Fd())
+	}
 	cmd.ExtraFiles = []*os.File{live} // Descendants retain the liveness lock if the launcher is killed.
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
@@ -263,6 +278,13 @@ func (s *Store) Stop(id string) (*Run, error) {
 	alive, e := runAlive(s, r)
 	if e != nil {
 		return nil, e
+	}
+	// A launcher that just started holds its lock briefly before recording its PID.
+	for wait := time.Now().Add(3 * time.Second); alive && r.PID <= 0 && time.Now().Before(wait); {
+		time.Sleep(50 * time.Millisecond)
+		if r, e = s.Run(id); e != nil {
+			return nil, e
+		}
 	}
 	if alive {
 		// The script process owns the PTY. Closing it also hangs up the agent,

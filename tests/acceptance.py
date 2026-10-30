@@ -290,6 +290,17 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert rk('integrate', run['id'], ok=False).returncode
     assert git(other, 'status', '--porcelain') == ''
     print('PASS checked-out integration target is protected')
+
+    fixture('kingdom')
+    king = data('spawn', 'king', '--repo', 'kingdom')
+    restarted = data('restart', 'king')
+    assert restarted['id'] == king['id'] and restarted['attempt'] == 2
+    dismissed = data('dismiss', 'king')
+    assert dismissed['state'] == 'dismissed' and dismissed['process'] == 'stopped'
+    fresh = data('spawn', 'king', '--repo', 'kingdom')
+    assert fresh['id'] != king['id'] and data('show', 'king')['id'] == fresh['id']
+    data('dismiss', 'king')
+    print('PASS king restart, dismissal and fresh spawn')
     print(f'Acceptance artifacts: {root}')
 finally:
     # Isolated server only: TMUX_TMPDIR points inside this test directory.

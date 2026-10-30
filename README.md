@@ -40,6 +40,12 @@ rk spawn king
 rk attach king                       # or: rk at king
 ```
 
+The king is your point of contact: attach and type to it directly. Detach with
+the tmux prefix and `d` (`Ctrl-b d` by default); the king keeps running.
+`rk restart king` stops and relaunches it. `rk dismiss king` stops it and
+retires the run, keeping its record and logs, so `rk spawn king` starts a
+fresh one.
+
 `rk init` registers the repository, excludes the entire `/.beads/` directory in
 the common Git directory's `info/exclude`, initializes `.beads` if absent,
 enables exclusive claims, and creates an unchecked-out `rk/integration` branch
@@ -130,6 +136,7 @@ that work. No cleanup operation deletes remote branches.
 rk reconcile
 rk stop RUN
 rk resume RUN --message "Continue from the existing files; focus on the failing test"
+rk restart RUN --message "..."        # stop, then resume
 rk watch
 ```
 
@@ -174,7 +181,7 @@ Commands resolve the registered canonical repository rather than assuming the
 current working directory is the target. Run IDs also identify their repository.
 There is one king, system-wide, and it manages every registered repository
 using `--repo`. `rk spawn king` refuses while a king exists; resume a stopped
-king with `rk resume king`. `king` works as a run name in any command, and rats
+king with `rk resume king`, or `rk dismiss king` to replace it. `king` works as a run name in any command, and rats
 cannot use it.
 
 ## Publication and the guard boundary

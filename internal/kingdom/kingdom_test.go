@@ -282,3 +282,34 @@ func TestOneKingSystemWide(t *testing.T) {
 		t.Fatalf("rat took the king's name: %v", e)
 	}
 }
+func TestDismissedKingMakesRoomForAFreshOne(t *testing.T) {
+	// Stop observes tmux; keep it off the user's server. Sockets need a short path.
+	sock, e := os.MkdirTemp("/tmp", "rk")
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { os.RemoveAll(sock) })
+	t.Setenv("TMUX_TMPDIR", sock)
+	t.Setenv("TMUX", "")
+	home := t.TempDir()
+	s, _ := Open(home)
+	s.saveRepo(&Repo{ID: "r1", Name: "demo", Command: []string{"true"}, MaxRats: 1})
+	s.saveRun(&Run{ID: "k1", Name: "king", Role: "king", RepoID: "r1", State: "working", Process: "exited", Session: "rk-test-absent-k1"})
+	s.saveRun(&Run{ID: "rat1", Name: "Pip-rat1", Role: "rat", RepoID: "r1", State: "working", Process: "exited"})
+	if _, e := s.Dismiss("rat1"); e == nil {
+		t.Fatal("dismissed a rat")
+	}
+	r, e := s.Dismiss("k1")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if r.State != "dismissed" || r.Process != "stopped" {
+		t.Fatalf("not dismissed: %+v", r)
+	}
+	if _, e := s.King(); e == nil || !strings.Contains(e.Error(), "rk spawn king") {
+		t.Fatalf("dismissed king still resolves: %v", e)
+	}
+	if _, e := s.Resume("k1", ""); e == nil || !strings.Contains(e.Error(), "finalized") {
+		t.Fatalf("dismissed king resumed: %v", e)
+	}
+}
