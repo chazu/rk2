@@ -164,7 +164,7 @@ func TestRunPathDropsOtherRunsGuards(t *testing.T) {
 	}
 }
 func TestPublishRequiresRequestBeforeGit(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s, _ := Open(hermetic(t))
 	if e := s.Publish("missing", "origin", "main", ""); e == nil || !strings.Contains(e.Error(), "request") {
 		t.Fatal(e)
 	}
@@ -188,7 +188,7 @@ func TestAtomicFileModes(t *testing.T) {
 }
 
 func TestPublicationPinsOneRefAndDoesNotActuallyPush(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s, _ := Open(hermetic(t))
 	repo := &Repo{ID: "example", Name: "example", Path: t.TempDir()}
 	if e := s.saveRepo(repo); e != nil {
 		t.Fatal(e)
@@ -288,7 +288,7 @@ func TestLocalBeadsExclusionCreatesMissingInfoDirectory(t *testing.T) {
 	}
 }
 func TestOneKingSystemWide(t *testing.T) {
-	home := t.TempDir()
+	home := hermetic(t)
 	s, _ := Open(home)
 	if _, e := s.King(); e == nil || !strings.Contains(e.Error(), "rk spawn king") {
 		t.Fatalf("expected spawn hint, got %v", e)
