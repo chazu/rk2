@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -200,4 +201,149 @@ func GuardedBeads(args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// Beads resolves issue_prefix from the workspace's .beads/config.yaml, then
+// user-level config (~/.config/beads, legacy ~/.beads), then the database. A
+// workspace without its own prefix silently takes an unrelated project's from
+// the user's home, so rk keeps one explicitly in the workspace config.
+type RepoView struct {
+	Repo
+	IssuePrefix       string `json:"issue_prefix"`
+	IssuePrefixSource string `json:"issue_prefix_source"`
+}
+
+func validPrefix(p string) bool {
+	if p == "" || p[0] == '-' || p[len(p)-1] == '-' || strings.Contains(p, "--") {
+		return false
+	}
+	for _, c := range p {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// defaultPrefix sanitises a repository name: lowercase, runs of characters
+// outside [a-z0-9] become one hyphen, and edge hyphens are dropped.
+func defaultPrefix(name string) string {
+	var b strings.Builder
+	dash := false
+	for _, c := range strings.ToLower(name) {
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			if dash && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			b.WriteRune(c)
+			dash = false
+		} else {
+			dash = true
+		}
+	}
+	return b.String()
+}
+
+// workspacePrefix reports the issue_prefix set in the workspace's own config
+// file, or "" when the workspace inherits one. br has no scoped get, so this
+// reads the config file; it never reads or writes the database.
+func workspacePrefix(repo *Repo) (string, error) {
+	b, e := os.ReadFile(filepath.Join(repo.BeadsDir, "config.yaml"))
+	if errors.Is(e, os.ErrNotExist) {
+		return "", nil
+	}
+	if e != nil {
+		return "", e
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		v, ok := strings.CutPrefix(line, "issue_prefix:")
+		if !ok {
+			continue
+		}
+		if i := strings.Index(v, " #"); i >= 0 {
+			v = v[:i]
+		}
+		return strings.Trim(strings.TrimSpace(v), `"'`), nil
+	}
+	return "", nil
+}
+func effectivePrefix(repo *Repo) (string, error) {
+	b, e := beads(repo, "king", "config", "get", "issue_prefix")
+	if e != nil {
+		return "", e
+	}
+	var v struct {
+		Value any `json:"value"`
+	}
+	if e = json.Unmarshal(b, &v); e != nil {
+		return "", e
+	}
+	if v.Value == nil {
+		return "", nil
+	}
+	return fmt.Sprint(v.Value), nil
+}
+func setPrefix(repo *Repo, prefix string) error {
+	if !validPrefix(prefix) {
+		return fmt.Errorf("invalid issue prefix %q: use lowercase letters, digits and single inner hyphens", prefix)
+	}
+	if _, e := beads(repo, "king", "config", "set", "issue_prefix", prefix); e != nil {
+		return e
+	}
+	if got, e := workspacePrefix(repo); e != nil || got != prefix {
+		return fmt.Errorf("issue_prefix %q was not recorded in %s (found %q, %v)", prefix, filepath.Join(repo.BeadsDir, "config.yaml"), got, e)
+	}
+	return nil
+}
+
+// ensurePrefix gives the workspace an explicit prefix: the requested one, or
+// fallback when the workspace has none of its own. An existing explicit prefix
+// is left alone unless a different one is requested.
+func ensurePrefix(repo *Repo, requested, fallback string) error {
+	own, e := workspacePrefix(repo)
+	if e != nil {
+		return e
+	}
+	switch {
+	case requested != "" && requested != own:
+		return setPrefix(repo, requested)
+	case requested == "" && own == "":
+		if !validPrefix(fallback) {
+			return fmt.Errorf("workspace has no issue_prefix and repository name gives no usable default %q; pass --prefix", fallback)
+		}
+		return setPrefix(repo, fallback)
+	}
+	return nil
+}
+
+// initWorkspace creates the repository's Beads workspace if absent, then makes
+// sure it has an explicit prefix. br init --prefix only records the prefix in
+// the database, which user-level config overrides, hence ensurePrefix.
+func initWorkspace(repo *Repo, requested, fallback string) error {
+	if _, e := os.Stat(repo.BeadsDir); errors.Is(e, os.ErrNotExist) {
+		if !validPrefix(fallback) {
+			return fmt.Errorf("repository name gives no usable issue prefix %q; pass --prefix", fallback)
+		}
+		if _, e = beads(repo, "king", "init", "--prefix", fallback); e != nil {
+			return e
+		}
+	} else if e != nil {
+		return e
+	}
+	return ensurePrefix(repo, requested, fallback)
+}
+func viewRepo(repo *Repo) RepoView {
+	v := RepoView{Repo: *repo, IssuePrefixSource: "workspace"}
+	own, e := workspacePrefix(repo)
+	if e != nil {
+		v.IssuePrefixSource = "unknown: " + e.Error()
+		return v
+	}
+	if own == "" {
+		v.IssuePrefixSource = "inherited (not set in workspace; use rk config --prefix)"
+	}
+	if v.IssuePrefix, e = effectivePrefix(repo); e != nil {
+		v.IssuePrefixSource = "unknown: " + e.Error()
+	}
+	return v
 }

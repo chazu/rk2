@@ -412,6 +412,80 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert fresh['id'] != king['id'] and data('show', 'king')['id'] == fresh['id']
     data('dismiss', 'king')
     print('PASS king restart, dismissal and fresh spawn')
+    # A workspace without its own issue_prefix inherits the user's
+    # ~/.beads/config.yaml. The decoy home lives inside this temp root.
+    home = root / 'home'
+    (home / '.beads').mkdir(parents=True)
+    (home / '.beads/config.yaml').write_text('issue_prefix: decoy\n')
+    decoy = {'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config')}
+    def hdata(*args):
+        return json.loads(rk(*args, extra=decoy).stdout)
+    def plain_repo(name):
+        repo = home / name
+        repo.mkdir()
+        git(repo, 'init', '-b', 'main')
+        git(repo, 'config', 'user.name', 'Acceptance')
+        git(repo, 'config', 'user.email', 'acceptance@example.invalid')
+        git(repo, 'config', 'commit.gpgsign', 'false')
+        (repo / 'base.txt').write_text('base\n')
+        git(repo, 'add', 'base.txt')
+        git(repo, 'commit', '-m', 'initial')
+        return repo
+    def br_here(repo, *args):
+        return command(['br', *args, '--no-auto-flush', '--no-auto-import'], cwd=repo,
+                       extra={**decoy, 'BEADS_DIR': str(repo / '.beads')}).stdout
+    def prefix_of(name):
+        view = next(r for r in hdata('repos') if r['name'] == name)
+        return view['issue_prefix'], view['issue_prefix_source']
+    def htask(name, title):
+        return hdata('task', '--repo', name, 'create', title)['id']
+    def hshow(name, issue):
+        return hdata('task', '--repo', name, 'show', issue)[0]['id']
+    no_agent = ('--command', '["/bin/sh","-c","exit 0"]')
+
+    rk('init', str(plain_repo('Prefix_Demo')), *no_agent, extra=decoy)
+    assert prefix_of('Prefix_Demo') == ('prefix-demo', 'workspace')
+    assert htask('Prefix_Demo', 'own prefix').startswith('prefix-demo-')
+    rk('init', str(plain_repo('override')), *no_agent, '--prefix', 'ovr', extra=decoy)
+    assert prefix_of('override') == ('ovr', 'workspace')
+    assert htask('override', 'override prefix').startswith('ovr-')
+    assert rk('init', str(plain_repo('badprefix')), *no_agent, '--prefix', 'Bad_X',
+              ok=False, extra=decoy).returncode
+    print('PASS new workspaces get their own issue prefix despite a decoy home config')
+
+    adopted = plain_repo('adopted')
+    br_here(adopted, 'init')
+    leaked = json.loads(br_here(adopted, 'create', 'before rk', '--json'))['id']
+    assert leaked.startswith('decoy-'), leaked
+    rk('init', str(adopted), *no_agent, extra=decoy)
+    assert prefix_of('adopted') == ('adopted', 'workspace')
+    assert htask('adopted', 'after rk').startswith('adopted-')
+    assert hshow('adopted', leaked) == leaked
+    keeper = plain_repo('keeper')
+    br_here(keeper, 'init')
+    br_here(keeper, 'config', 'set', 'issue_prefix', 'keep')
+    rk('init', str(keeper), *no_agent, extra=decoy)
+    assert prefix_of('keeper') == ('keep', 'workspace')
+    assert htask('keeper', 'kept').startswith('keep-')
+    print('PASS adopting a workspace sets a missing prefix and keeps an explicit one')
+
+    # Simulate a workspace registered before rk managed prefixes.
+    config = adopted / '.beads/config.yaml'
+    config.write_text(''.join(l for l in config.read_text().splitlines(True)
+                              if not l.startswith('issue_prefix:')))
+    prefix, source = prefix_of('adopted')
+    assert prefix == 'decoy' and source.startswith('inherited'), (prefix, source)
+    older = htask('adopted', 'still inherited')
+    assert older.startswith('decoy-')
+    assert rk('config', '--repo', 'adopted', '--prefix', 'Bad_X', ok=False, extra=decoy).returncode
+    view = hdata('config', '--repo', 'adopted', '--prefix', 'adopted2')
+    assert (view['issue_prefix'], view['issue_prefix_source']) == ('adopted2', 'workspace')
+    assert htask('adopted', 'renamed prefix').startswith('adopted2-')
+    for issue in (leaked, older):
+        assert hshow('adopted', issue) == issue
+    assert hdata('config', '--repo', 'keeper', '--max-rats', '2')['issue_prefix'] == 'keep'
+    assert (home / '.beads/config.yaml').read_text() == 'issue_prefix: decoy\n'
+    print('PASS rk config sets a registered workspace prefix without renaming issues')
     print(f'Acceptance artifacts: {root}')
 finally:
     # Isolated server only: TMUX_TMPDIR points inside this test directory.
