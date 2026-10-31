@@ -12,6 +12,17 @@ import (
 	"time"
 )
 
+// TestMain drops a managed session's identity and Git settings, as the
+// acceptance suite does, so tests behave the same inside rat and king sessions.
+func TestMain(m *testing.M) {
+	for _, v := range os.Environ() {
+		k, _, _ := strings.Cut(v, "=")
+		if strings.HasPrefix(k, "RK_") || strings.HasPrefix(k, "GIT_") || strings.HasPrefix(k, "BEADS_") || strings.HasPrefix(k, "BD_") || strings.HasPrefix(k, "BR_") {
+			os.Unsetenv(k)
+		}
+	}
+	os.Exit(m.Run())
+}
 func TestGitGuard(t *testing.T) {
 	denied := [][]string{{"push"}, {"-C", "/tmp/repo", "push", "--no-verify"}, {"notes", "add"}, {"p"}, {"-c", "alias.p=push", "p"}, {"--config-env=core.hooksPath=ESCAPE", "commit"}, {"--exec-path=/tmp", "status"}, {"show", "refs/notes/commits"}, {"fetch", "--upload-pack=evil"}, {"rebase", "--exec", "git push"}, {"commit", "--no-verify"}}
 	for _, args := range denied {

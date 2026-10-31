@@ -235,12 +235,46 @@ human consent. The king must faithfully follow the user's actual instruction.
 Managed sessions receive:
 
 - A Git command wrapper that rejects pushes, notes, aliases, configuration
-  overrides, and selected execution escapes.
+  overrides, and selected execution escapes in protected repositories (see
+  below), and keeps publication closed everywhere else.
 - A session-only pre-push hook, without rewriting repository configuration.
   Other existing hooks remain available.
 - For Claude, a shell-tool hook that rejects common direct Git bypasses.
 - Role checks preventing rats from invoking publication and coordinator
   commands, including `rk task close`.
+
+### Git guard scope
+
+The Git wrapper first determines which repository a call targets by asking the
+real Git, with the call's `-C` (cumulative), `--git-dir`, `--work-tree`,
+`--bare` and `-c` options, the inherited environment (`GIT_DIR` and friends)
+and the current directory, for its common Git directory. Symlinks are resolved,
+so `/tmp` and `/private/tmp` name the same repository.
+
+- **Protected**: the common directory is that of a repository registered in the
+  session's own store, which covers its main checkout, every linked worktree,
+  and rat worktrees. The session's store is found from the run guard directory
+  (`STATE/runs/RUN/bin`) on `PATH`, not from `RK_HOME`, so changing `RK_HOME`
+  cannot unprotect it; a nested session also protects its parents' stores.
+  Only without a guard directory on `PATH` is `RK_HOME`'s store used. Protected
+  calls get the full allowlist and option checks.
+- **Unrelated**: anything else, including a directory that is not yet a
+  repository, runs the real Git unchanged. This lets `make check` create and
+  drive its disposable fixtures from inside a managed session. Even here the
+  wrapper denies `push`, `send-pack`, `receive-pack`, `http-push`, `remote-*`,
+  `notes`, `refs/notes`, `--no-verify`, `--exec*`, `--upload-pack*`, and any
+  alias (an alias such as `p = push` would expand without the guard), and it
+  turns off `help.autocorrect` so that a typo cannot become a push.
+- **Undetermined**: an unrecognized global option, a missing option value, or a
+  resolution error other than "not a git repository" is denied.
+
+The scope has limits. Only the options above and the current directory choose
+the target. Path arguments of an unrelated call are not inspected, for example
+`git init DIR`, `git clone SRC DST`, `--separate-git-dir` or `config --file`.
+The repository is resolved just before Git runs, not atomically with it.
+Commands that Git starts itself, such as hooks, `submodule foreach` or
+`rebase -x` in an unrelated repository, find the real Git on Git's exec path
+rather than the wrapper. The session pre-push hook still applies to them.
 
 These are executable operational guards, **not a hostile-code sandbox**. An
 agent with unrestricted shell access under your account can deliberately evade
@@ -258,7 +292,8 @@ concurrent claim attempts, process stop and launcher-crash recovery, nonzero
 exit receipts, untracked-file preservation, blocked outcomes, comment retry and
 deduplication, integration conflicts, failed checks, ticket-closure retry,
 king closure without integration and its refusals,
-checked-out-target protection, and normal command guards.
+checked-out-target protection, and normal command guards, including Git
+calls in an unrelated repository from inside a managed session.
 
 The publication command's authorized argument construction is tested against a
 fake Git executable, so validation performs no actual pushes. Live model

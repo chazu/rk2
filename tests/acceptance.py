@@ -194,8 +194,20 @@ git status --porcelain
 printf 'hook-check\\n' > hook-check.txt
 git add hook-check.txt
 git commit -m 'verify original hook context'
+unrelated=UNRELATED
+mkdir "$unrelated"
+git -C "$unrelated" init -q -b main
+git -C "$unrelated" -c user.name=Probe -c user.email=probe@example.invalid -c commit.gpgsign=false \\
+  commit -q --allow-empty -m unrelated
+git -C "$unrelated" init -q --bare remote.git
+if out=$(git -C "$unrelated" push remote.git main 2>&1); then exit 36; fi
+case "$out" in *'Git command "push" denied'*) ;; *) echo "$out"; exit 37 ;; esac
+if git -C "$unrelated" -c alias.p=push p remote.git main; then exit 38; fi
+if out=$(git worktree add ../escape-worktree 2>&1); then exit 39; fi
+case "$out" in *'Git command "worktree" denied'*) ;; *) echo "$out"; exit 40 ;; esac
+if git -C DEMO worktree add ../escape-main; then exit 41; fi
 printf 'guards-passed\\n' > guard-evidence.txt
-''')
+'''.replace('UNRELATED', str(root / 'unrelated')).replace('DEMO', str(repo)))
     probe.chmod(0o700)
     rk('config', '--repo', 'demo', '--command', json.dumps(['/bin/sh', str(probe)]))
     run = data('spawn', 'rat', '--repo', 'demo', '--task', issue)
@@ -203,11 +215,17 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert final['exit_code'] == 0, final
     assert (Path(run['worktree']) / 'guard-evidence.txt').read_text() == 'guards-passed\n'
     assert 'denied' in rk('logs', run['id']).stdout
+    # Outside registered repositories Git runs normally, but cannot publish.
+    assert (root / 'unrelated/.git').is_dir()
+    assert command(['git', '-C', str(root / 'unrelated/remote.git'), 'rev-parse', '--verify', '-q',
+                    'refs/heads/main'], ok=False).returncode
+    worktrees = [l for l in git(repo, 'worktree', 'list', '--porcelain').splitlines() if l.startswith('worktree ')]
+    assert len(worktrees) == 2, worktrees  # the main checkout and this rat's
     # Neither shared config nor main's hook lookup was overwritten.
     assert not command(['git', '-C', str(repo), 'config', '--get', 'core.hooksPath'], ok=False).stdout
     stopped(run); rk('clean', run['id'], '--discard')
     assert rk('publish', '--repo', 'demo', '--remote', 'origin', '--branch', 'main', ok=False).returncode
-    print('PASS managed command guards, logs, no hook config changes, missing push authorization')
+    print('PASS managed command guards, unrelated-repo pass-through without publication, logs, no hook config changes, missing push authorization')
 
     # Conflicting results retain the source and candidate; target stays unchanged.
     rk('config', '--repo', 'demo', '--command', '["/bin/sh","-c","exit 0"]')
@@ -290,7 +308,11 @@ printf 'guards-passed\\n' > guard-evidence.txt
     print('PASS four concurrent rk claim attempts produce one winner')
 
     # Delivery failure saves the result, then retries without duplicate comments.
-    realbr = shutil.which('br')
+    # Wrap the br that rk itself would run: skip run guard directories
+    # (ROOT/runs/ID/bin), as rk does when the suite runs in a managed session.
+    realbr = shutil.which('br', path=os.pathsep.join(
+        d for d in env['PATH'].split(os.pathsep)
+        if not (Path(d).name == 'bin' and Path(d).parent.parent.name == 'runs')))
     fault = root / 'fault-br.sh'
     fault.write_text('#!/bin/sh\nif [ "$1" = comments ]; then exit 77; fi\nexec ' + realbr + ' "$@"\n')
     fault.chmod(0o700)
