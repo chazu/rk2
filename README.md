@@ -238,7 +238,18 @@ Managed sessions receive:
   overrides, and selected execution escapes.
 - A session-only pre-push hook, without rewriting repository configuration.
   Other existing hooks remain available.
-- For Claude, a shell-tool hook that rejects common direct Git bypasses.
+- For Claude, a shell-tool hook that parses each Bash command and rejects
+  what it would execute: Git (by any path) pushing, sending or receiving
+  packs, touching notes, skipping hooks, or setting `core.hooksPath` or
+  aliases; assigning, exporting, or unsetting the managed `RK_*` and
+  `GIT_CONFIG*` variables; and naming the real Git or Beads executable. It
+  looks through pipelines, lists, subshells, command substitution, `bash -c`,
+  `eval`, and wrappers such as `env`, `sudo`, and `xargs`. The same words as
+  data (quoted arguments to other commands, heredoc bodies, comments, grep
+  patterns) are allowed. A command it cannot judge, such as one whose command
+  name is built from an expansion, is denied. It does not read script files,
+  other interpreters' code, or functions and aliases defined outside the
+  command.
 - Role checks preventing rats from invoking publication and coordinator
   commands, including `rk task close`.
 

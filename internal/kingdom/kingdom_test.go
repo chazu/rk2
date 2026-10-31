@@ -27,14 +27,141 @@ func TestGitGuard(t *testing.T) {
 	}
 }
 func TestProviderGuard(t *testing.T) {
-	for _, cmd := range []string{"git push origin main", "/usr/bin/git push", "git -C . push --no-verify", "git notes add", "git config core.hooksPath /dev/null"} {
-		b, _ := json.Marshal(map[string]any{"tool_input": map[string]string{"command": cmd}})
-		if e := CheckShell(bytes.NewReader(b)); e == nil {
-			t.Errorf("allowed %s", cmd)
+	allowed := []string{
+		"go test ./...",
+		`rk task create --description "no pushes, no git notes"`,
+		`rk task create --description "no git notes"`,
+		`br comments add x "do not set RK_ROLE=king, unset RK_RUN, or export GIT_CONFIG_COUNT"`,
+		`echo 'git push'`,
+		`echo "git push --no-verify; git -c core.hooksPath=/x commit"`,
+		"cat <<EOF\ngit push origin main\ngit notes add\nEOF",
+		"cat <<'EOF' > notes.txt\n$(git push)\nEOF",
+		"cat <<-EOF | grep push\n\tgit push\n\tEOF\necho done",
+		`grep -rn "git push" .`,
+		`grep -n 'RK_REAL_GIT\|core.hooksPath\|refs/notes' internal/kingdom/*.go`,
+		`sed -n 's/git notes/x/p' README.md`,
+		"# git push\ngo build ./...",
+		"echo ok # git push",
+		`git commit -m "Explain why no git push happens here"`,
+		`git commit -am "fix push button" --author "A <a@b>"`,
+		"git commit -m \"$(cat <<'EOF'\nNo git push or git notes; RK_ROLE=king in prose.\nEOF\n)\" && git log -1",
+		"git commit -m '-n is just text'",
+		"git stash push -u -m tag",
+		"if [[ $x =~ ^a(b|c)$ ]]; then echo y; fi",
+		"git status --porcelain && git diff HEAD~1",
+		"git -C /tmp/repo log -3 --oneline",
+		"/usr/bin/git status",
+		`git log @{u}..HEAD --grep push`,
+		"command -v git",
+		"ls | xargs grep push",
+		`for f in *.go; do gofmt -l "$f"; done`,
+		`case "$x" in push) echo push;; *) echo other;; esac`,
+		`echo "$(case $x in (a|b) echo a ;; esac)"`,
+		"echo $RK_ROLE $RK_RUN",
+		`bash -c 'go vet ./...'`,
+		"x=$(git rev-parse HEAD); echo \"$x\"",
+		"make check 2>&1 | tail -20",
+		`[[ -n "$RK_RUN" && -d .git ]] && echo yes`,
+		"find . -name '*.go' -exec gofmt -l {} +",
+		`printf '%s\n' RK_ROLE=king`,
+		"f() { go test ./...; }; f",
+		"arr=(git push); echo ${#arr[@]}",
+		"echo $((1 + 2))",
+		"while read -r line; do echo \"$line\"; done < file",
+	}
+	for _, cmd := range allowed {
+		if e := checkShellCommand(cmd); e != nil {
+			t.Errorf("rejected %q: %v", cmd, e)
 		}
 	}
-	if e := CheckShell(strings.NewReader(`{"tool_input":{"command":"go test ./..."}}`)); e != nil {
+	denied := []string{
+		"git push",
+		"git push origin main",
+		"/usr/bin/git push origin x",
+		"/usr/bin/Git push",
+		"git -C dir push",
+		"git -C . push --no-verify",
+		"git --git-dir=.git push",
+		`bash -c "git push"`,
+		"sh -lc 'cd x && git push'",
+		`eval "git push"`,
+		"env RK_ROLE=king rk task list",
+		"export RK_ROLE=king",
+		"declare -x RK_RUN=x",
+		"RK_ROLE=king rk x",
+		"unset RK_RUN",
+		"unset GIT_CONFIG_COUNT",
+		"env -u RK_ROLE rk x",
+		"env -i rk task list",
+		"git commit --no-verify -m x",
+		"git commit --no-verif -m x",
+		"git commit -nm x",
+		"git -c core.hooksPath=/x commit",
+		"git config core.hooksPath /dev/null",
+		"git -c alias.p=push p",
+		"GIT_CONFIG_COUNT=0 git commit -m x",
+		"$(echo git) push",
+		"`echo git` push",
+		`"$G" push`,
+		"git $SUB",
+		"git {push,x}",
+		"echo ok && git push",
+		"(cd x; git push)",
+		"{ git push; }",
+		"if true; then git push; fi",
+		"! git push",
+		"x=$(git push)",
+		`echo "$(git push)"`,
+		"echo <(git push)",
+		"cat <<EOF\n$(git push)\nEOF",
+		"git notes add -m x",
+		"git fetch origin +refs/notes/commits:refs/notes/commits",
+		"git send-pack x",
+		"git-receive-pack .",
+		"/usr/libexec/git-core/git-send-pack x",
+		`"$RK_REAL_GIT" push`,
+		"$RK_REAL_GIT status",
+		"${RK_REAL_BR} list",
+		"RK_REAL_GIT status",
+		"sudo -u root git push",
+		"nohup git push &",
+		"command git push",
+		"exec git push",
+		"time git push",
+		"timeout 5 git push",
+		"echo push | xargs git",
+		"echo push | xargs -I{} git {}",
+		`find . -exec git push \;`,
+		"echo git push | bash",
+		"bash <<EOF\ngit push\nEOF",
+		"bash <<< 'git push'",
+		"git rebase -x 'git push' main",
+		"for RK_ROLE in king; do rk x; done",
+		"echo ${RK_ROLE:=king}",
+		"read RK_ROLE <<< king",
+		"printf -v RK_ROLE king",
+		`$'\x67it' push`,
+		`g\it push`,
+		`"git" push`,
+		"alias g='git push'",
+		"trap 'git push' EXIT",
+		"echo 'unterminated",
+		"echo $(git status",
+	}
+	for _, cmd := range denied {
+		if e := checkShellCommand(cmd); e == nil {
+			t.Errorf("allowed %q", cmd)
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"tool_input": map[string]string{"command": "git -C . push"}})
+	if e := CheckShell(bytes.NewReader(b)); e == nil {
+		t.Error("hook allowed git push")
+	}
+	if e := CheckShell(strings.NewReader(`{"tool_input":{"command":"rk task create --description \"no git notes\""}}`)); e != nil {
 		t.Fatal(e)
+	}
+	if e := CheckShell(strings.NewReader(`not json`)); e == nil {
+		t.Error("hook allowed malformed input")
 	}
 }
 func TestStateAtomicReadersAndLock(t *testing.T) {
