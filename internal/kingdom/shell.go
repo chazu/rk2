@@ -84,7 +84,7 @@ func denied(format string, a ...any) error {
 func undecidable(format string, a ...any) error {
 	return fmt.Errorf("managed command denied, cannot judge it: "+format, a...)
 }
-func realName(n string) bool { return n == "RK_REAL_GIT" || n == "RK_REAL_BR" }
+func realName(n string) bool { return n == "RK_REAL_BR" }
 func protectedVar(n string) bool {
 	return n == "RK_ROLE" || n == "RK_RUN" || realName(n) || strings.HasPrefix(n, "GIT_CONFIG")
 }
@@ -772,8 +772,8 @@ func (p *shParser) run(c *shCmd, words []shWord, more bool) error {
 	if w.dynamic() || w.pattern() {
 		return undecidable("command name %s is built at run time", show(w))
 	}
-	if strings.Contains(w.val, "RK_REAL_GIT") || strings.Contains(w.val, "RK_REAL_BR") {
-		return denied("names the real Git or Beads executable")
+	if strings.Contains(w.val, "RK_REAL_BR") {
+		return denied("names the real Beads executable")
 	}
 	// Case-insensitive file systems run GIT as git.
 	name, args := strings.ToLower(path.Base(w.val)), words[1:]

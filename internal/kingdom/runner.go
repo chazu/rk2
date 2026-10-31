@@ -87,7 +87,7 @@ func (s *Store) prepare(repo *Repo, r *Run, exe string) error {
 	if e := os.MkdirAll(bin, 0700); e != nil {
 		return e
 	}
-	for _, name := range []string{"rk", "git", "br"} {
+	for _, name := range []string{"rk", "br"} {
 		p := filepath.Join(bin, name)
 		os.Remove(p)
 		if e := os.Symlink(exe, p); e != nil {
@@ -117,7 +117,7 @@ func (s *Store) prepare(repo *Repo, r *Run, exe string) error {
 var kingPrompt string
 
 const sharedRules = `Do not push, delete remote refs, use Git notes, or perform synchronization.
-Do not bypass the Git command guards or alter their environment/hooks.
+Do not bypass the push, command and Beads guards or alter their environment/hooks.
 Local commits are encouraged. Preserve unrelated work and existing hooks.
 Lines starting with [rk] are notices rat-kingdom types into your session about new messages or results; follow them.
 Do not treat terminal silence, process exit, or a claim as task completion.
@@ -159,11 +159,9 @@ Previous handoff / continuation: %s
 `, t.ID, t.Title, t.Description, r.Worktree, r.Branch, r.Target, t.ID, r.Summary), nil
 }
 func (s *Store) runEnv(repo *Repo, r *Run) []string {
-	realGit := gitExecutable()
-	realBR := beadsExecutable()
 	env := map[string]string{
 		"RK_HOME": s.Root, "RK_RUN": r.ID, "RK_ROLE": r.Role,
-		"RK_REAL_GIT": realGit, "RK_REAL_BR": realBR,
+		"RK_REAL_BR":       beadsExecutable(),
 		"PATH":             s.runPath(r),
 		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": filepath.Join(s.runDir(r.ID), "hooks"),
 		"BR_AGENT_NAME": r.Name, "BR_SESSION": r.ID, "BR_HARNESS": "rat-kingdom", "RUST_LOG": "error",

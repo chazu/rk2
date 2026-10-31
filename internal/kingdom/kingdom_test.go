@@ -13,20 +13,6 @@ import (
 	"time"
 )
 
-func TestGitGuard(t *testing.T) {
-	denied := [][]string{{"push"}, {"-C", "/tmp/repo", "push", "--no-verify"}, {"notes", "add"}, {"p"}, {"-c", "alias.p=push", "p"}, {"--config-env=core.hooksPath=ESCAPE", "commit"}, {"--exec-path=/tmp", "status"}, {"show", "refs/notes/commits"}, {"fetch", "--upload-pack=evil"}, {"rebase", "--exec", "git push"}, {"commit", "--no-verify"}}
-	for _, args := range denied {
-		if e := GuardGit(args); e == nil {
-			t.Errorf("allowed %v", args)
-		}
-	}
-	allowed := [][]string{{"status", "--porcelain"}, {"-C", "/tmp/repo", "commit", "-m", "fix push button"}, {"diff", "HEAD~1"}, {"--no-pager", "log", "-3"}}
-	for _, args := range allowed {
-		if e := GuardGit(args); e != nil {
-			t.Errorf("rejected %v: %v", args, e)
-		}
-	}
-}
 func TestProviderGuard(t *testing.T) {
 	allowed := []string{
 		"go test ./...",
@@ -123,7 +109,7 @@ func TestProviderGuard(t *testing.T) {
 		`"$RK_REAL_GIT" push`,
 		"$RK_REAL_GIT status",
 		"${RK_REAL_BR} list",
-		"RK_REAL_GIT status",
+		"RK_REAL_BR list",
 		"sudo -u root git push",
 		"nohup git push &",
 		"command git push",
@@ -263,21 +249,21 @@ func TestInheritedGuardIsNotTheRealExecutable(t *testing.T) {
 		t.Fatal(e)
 	}
 	guard, real := t.TempDir(), t.TempDir()
-	if e = os.Symlink(exe, filepath.Join(guard, "git")); e != nil {
+	if e = os.Symlink(exe, filepath.Join(guard, "br")); e != nil {
 		t.Fatal(e)
 	}
-	if e = os.WriteFile(filepath.Join(real, "git"), []byte("#!/bin/sh\n"), 0700); e != nil {
+	if e = os.WriteFile(filepath.Join(real, "br"), []byte("#!/bin/sh\n"), 0700); e != nil {
 		t.Fatal(e)
 	}
 	t.Setenv("PATH", guard+string(os.PathListSeparator)+real)
-	t.Setenv("RK_REAL_GIT", filepath.Join(guard, "git"))
-	if p := gitExecutable(); p != filepath.Join(real, "git") {
+	t.Setenv("RK_REAL_BR", filepath.Join(guard, "br"))
+	if p := beadsExecutable(); p != filepath.Join(real, "br") {
 		t.Fatalf("resolved %q", p)
 	}
-	if e = GuardedGit([]string{"status"}); e == nil || !strings.Contains(e.Error(), "guard itself") {
+	if e = GuardedBeads([]string{"list"}); e == nil || !strings.Contains(e.Error(), "guard itself") {
 		t.Fatalf("guard exec'd itself: %v", e)
 	}
-	if env := strings.Join(launchEnv(), " "); !strings.Contains(env, "-e RK_REAL_GIT="+filepath.Join(real, "git")) {
+	if env := strings.Join(launchEnv(), " "); env != "-e RK_REAL_BR="+filepath.Join(real, "br") {
 		t.Fatalf("launch env %q", env)
 	}
 }
@@ -336,7 +322,7 @@ esac
 	if e := os.WriteFile(fake, []byte(script), 0700); e != nil {
 		t.Fatal(e)
 	}
-	t.Setenv("RK_REAL_GIT", fake)
+	t.Setenv("PATH", filepath.Dir(fake)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("RK_TEST_LOG", log)
 	if e := s.Publish(repo.ID, "origin", "feature", "Please push feature"); e != nil {
 		t.Fatal(e)

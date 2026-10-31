@@ -17,15 +17,16 @@ for tool in ('git', 'br', 'tmux'):
 root = Path(tempfile.mkdtemp(prefix='rk-accept-', dir='/tmp'))
 env = {k: v for k, v in os.environ.items()
        if not k.startswith(('RK_', 'GIT_', 'BEADS_', 'BD_', 'BR_')) and k != 'TMUX'}
+# Drive the disposable kingdom as the user would: without the run guard
+# directories (ROOT/runs/ID/bin) of a managed session the suite runs inside.
+env['PATH'] = os.pathsep.join(
+    d for d in env['PATH'].split(os.pathsep)
+    if not (Path(d).name == 'bin' and Path(d).parent.parent.name == 'runs'))
 env.update(RK_HOME=str(root / 'state'), TMUX_TMPDIR=str(root), RUST_LOG='error',
            RK_NUDGE_INTERVAL='300ms')
 
-# The br that rk itself runs, for fault wrappers and for driving a workspace
-# as the user would: skip run guard directories (ROOT/runs/ID/bin), as rk does
-# when the suite runs inside a managed session.
-realbr = shutil.which('br', path=os.pathsep.join(
-    d for d in env['PATH'].split(os.pathsep)
-    if not (Path(d).name == 'bin' and Path(d).parent.parent.name == 'runs')))
+# The br that rk itself runs, for fault wrappers and for driving a workspace.
+realbr = shutil.which('br', path=env['PATH'])
 
 def command(args, cwd=None, ok=True, extra=None):
     p = subprocess.run(args, cwd=cwd, env={**env, **(extra or {})},
@@ -193,7 +194,7 @@ try:
     rk('clean', run['id'], '--discard')
     print('PASS claim-to-launch failure retains recoverable ownership')
 
-    # Managed shell commands and absolute Git calls with inherited hook config.
+    # A managed session runs plain Git under the session pre-push hook and existing hooks.
     issue = task('demo', 'guards')
     hookdir = repo / '.git/hooks'
     (hookdir / 'resources').mkdir()
@@ -204,12 +205,16 @@ try:
     probe = root / 'guard-probe.sh'
     probe.write_text('''#!/bin/sh
 set -eu
-if git push origin main; then exit 31; fi
-if git push --no-verify origin main; then exit 32; fi
-if git -c alias.p=push p; then exit 33; fi
-if git notes add -m forbidden; then exit 34; fi
+# rk provides rk and br on PATH, but no git: Git itself is not wrapped.
+bin="$RK_HOME/runs/$RK_RUN/bin"
+test -x "$bin/rk"; test -x "$bin/br"
+if [ -e "$bin/git" ] || [ -L "$bin/git" ]; then exit 30; fi
+if [ -n "${RK_REAL_GIT+set}" ]; then exit 29; fi
+case "$(command -v git)" in */runs/*/bin/git) exit 28 ;; esac
+case "$(git --version)" in 'git version '*) ;; *) exit 27 ;; esac
 if rk publish --remote origin --branch main --request invented; then exit 35; fi
 git status --porcelain
+git worktree list --porcelain > /dev/null
 printf 'hook-check\\n' > hook-check.txt
 git add hook-check.txt
 git commit -m 'verify original hook context'
@@ -218,33 +223,34 @@ mkdir "$unrelated"
 git -C "$unrelated" init -q -b main
 git -C "$unrelated" -c user.name=Probe -c user.email=probe@example.invalid -c commit.gpgsign=false \\
   commit -q --allow-empty -m unrelated
+git -C "$unrelated" worktree list > /dev/null
 git -C "$unrelated" init -q --bare remote.git
+# The session pre-push hook refuses pushes from any repository.
+if out=$(git push "$unrelated/remote.git" HEAD:refs/heads/rat 2>&1); then exit 31; fi
+case "$out" in *'direct pushes are disabled'*) ;; *) echo "$out"; exit 32 ;; esac
 if out=$(git -C "$unrelated" push remote.git main 2>&1); then exit 36; fi
-case "$out" in *'Git command "push" denied'*) ;; *) echo "$out"; exit 37 ;; esac
-if git -C "$unrelated" -c alias.p=push p remote.git main; then exit 38; fi
-if out=$(git worktree add ../escape-worktree 2>&1); then exit 39; fi
-case "$out" in *'Git command "worktree" denied'*) ;; *) echo "$out"; exit 40 ;; esac
-if git -C DEMO worktree add ../escape-main; then exit 41; fi
+case "$out" in *'direct pushes are disabled'*) ;; *) echo "$out"; exit 37 ;; esac
 printf 'guards-passed\\n' > guard-evidence.txt
-'''.replace('UNRELATED', str(root / 'unrelated')).replace('DEMO', str(repo)))
+'''.replace('UNRELATED', str(root / 'unrelated')))
     probe.chmod(0o700)
     rk('config', '--repo', 'demo', '--command', json.dumps(['/bin/sh', str(probe)]))
     run = data('spawn', 'rat', '--repo', 'demo', '--task', issue)
     final = wait_exit(run)
     assert final['exit_code'] == 0, final
     assert (Path(run['worktree']) / 'guard-evidence.txt').read_text() == 'guards-passed\n'
-    assert 'denied' in rk('logs', run['id']).stdout
-    # Outside registered repositories Git runs normally, but cannot publish.
+    assert 'rats cannot invoke rk publish' in rk('logs', run['id']).stdout
+    # Plain Git works in the session, but the pre-push hook refused both pushes.
     assert (root / 'unrelated/.git').is_dir()
-    assert command(['git', '-C', str(root / 'unrelated/remote.git'), 'rev-parse', '--verify', '-q',
-                    'refs/heads/main'], ok=False).returncode
+    for ref in ('refs/heads/main', 'refs/heads/rat'):
+        assert command(['git', '-C', str(root / 'unrelated/remote.git'), 'rev-parse', '--verify', '-q',
+                        ref], ok=False).returncode
     worktrees = [l for l in git(repo, 'worktree', 'list', '--porcelain').splitlines() if l.startswith('worktree ')]
     assert len(worktrees) == 2, worktrees  # the main checkout and this rat's
     # Neither shared config nor main's hook lookup was overwritten.
     assert not command(['git', '-C', str(repo), 'config', '--get', 'core.hooksPath'], ok=False).stdout
     stopped(run); rk('clean', run['id'], '--discard')
     assert rk('publish', '--repo', 'demo', '--remote', 'origin', '--branch', 'main', ok=False).returncode
-    print('PASS managed command guards, unrelated-repo pass-through without publication, logs, no hook config changes, missing push authorization')
+    print('PASS managed session: no rk-provided git, plain git works, pre-push hook refuses pushes, logs, no hook config changes, missing push authorization')
 
     # Conflicting results retain the source and candidate; target stays unchanged.
     rk('config', '--repo', 'demo', '--command', '["/bin/sh","-c","exit 0"]')

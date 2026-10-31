@@ -10,9 +10,9 @@ import (
 // sessionVars identify a managed rat or king session. Rats and the king run
 // `make check` from those sessions, so tests must not inherit them: a rat role
 // alone turns king-side code paths into refusals, and RK_HOME names the user's
-// real kingdom. The Git and Beads guard environment (PATH guard shims, the
-// real-binary paths, GIT_* and BEADS_* overrides) is deliberately left alone;
-// tests that need a particular Git set it themselves with t.Setenv.
+// real kingdom. The guard environment (the br PATH shim, RK_REAL_BR, GIT_* and
+// BEADS_* overrides) is deliberately left alone; tests that need a particular
+// Git or br set it themselves with t.Setenv.
 var sessionVars = []string{"RK_ROLE", "RK_RUN", "RK_REPO", "RK_HOME", "RK_NUDGE_INTERVAL", "BEADS_DIR", "TMUX", "TMUX_PANE"}
 
 // TestMain clears the session identity before any test runs and points

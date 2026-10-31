@@ -11,7 +11,8 @@ func main() {
 	var err error
 	switch filepath.Base(os.Args[0]) {
 	case "git":
-		err = kingdom.GuardedGit(os.Args[1:])
+		// Guard directories made by an older rk link git here; rk no longer wraps Git.
+		err = fmt.Errorf("this session's PATH holds a stale git guard (%s); restart the session", os.Args[0])
 	case "br":
 		err = kingdom.GuardedBeads(os.Args[1:])
 	default:

@@ -293,16 +293,15 @@ human consent. The king must faithfully follow the user's actual instruction.
 
 Managed sessions receive:
 
-- A Git command wrapper that rejects pushes, notes, aliases, configuration
-  overrides, and selected execution escapes in protected repositories (see
-  below), and keeps publication closed everywhere else.
-- A session-only pre-push hook, without rewriting repository configuration.
-  Other existing hooks remain available.
+- A session-only pre-push hook, set through `GIT_CONFIG_COUNT` as
+  `core.hooksPath` in the session environment, without rewriting repository
+  configuration. It refuses every push the session's Git attempts, from any
+  repository. Other existing hooks remain available through it.
 - For Claude, a shell-tool hook that parses each Bash command and rejects
   what it would execute: Git (by any path) pushing, sending or receiving
   packs, touching notes, skipping hooks, or setting `core.hooksPath` or
   aliases; assigning, exporting, or unsetting the managed `RK_*` and
-  `GIT_CONFIG*` variables; and naming the real Git or Beads executable. It
+  `GIT_CONFIG*` variables; and naming the real Beads executable. It
   looks through pipelines, lists, subshells, command substitution, `bash -c`,
   `eval`, and wrappers such as `env`, `sudo`, and `xargs`. The same words as
   data (quoted arguments to other commands, heredoc bodies, comments, grep
@@ -310,50 +309,32 @@ Managed sessions receive:
   name is built from an expansion, is denied. It does not read script files,
   other interpreters' code, or functions and aliases defined outside the
   command.
+- A `br` wrapper on `PATH` that allows only reading tasks and dependencies,
+  comments, and task creation, and records the run as the actor.
 - Role checks preventing rats from invoking publication and coordinator
   commands, including `rk task close`.
 
-### Git guard scope
+Git itself is **not wrapped**. The run's guard directory (`STATE/runs/RUN/bin`)
+on `PATH` holds `rk` and `br` only, so `git` is whatever Git the user's `PATH`
+finds, and it behaves normally in a session: `git init`, `git worktree`,
+aliases, and `go build`'s VCS stamping all work, in registered repositories and
+elsewhere. rk's own Git calls use the same Git, with Git, Beads and role
+variables removed from their environment. Pushes stay closed by the pre-push
+hook, and for Claude also by the shell-tool hook. Notes, aliases and other Git
+features are refused only by the shell-tool hook, so other agent commands can
+use them.
 
-The Git wrapper first determines which repository a call targets by asking the
-real Git, with the call's `-C` (cumulative), `--git-dir`, `--work-tree`,
-`--bare` and `-c` options, the inherited environment (`GIT_DIR` and friends)
-and the current directory, for its common Git directory. Symlinks are resolved,
-so `/tmp` and `/private/tmp` name the same repository.
-
-- **Protected**: the common directory is that of a repository registered in the
-  session's own store, which covers its main checkout, every linked worktree,
-  and rat worktrees. The session's store is found from the run guard directory
-  (`STATE/runs/RUN/bin`) on `PATH`, not from `RK_HOME`, so changing `RK_HOME`
-  cannot unprotect it; a nested session also protects its parents' stores.
-  Only without a guard directory on `PATH` is `RK_HOME`'s store used. Protected
-  calls get the full allowlist and option checks.
-- **Unrelated**: anything else, including a directory that is not yet a
-  repository, runs the real Git unchanged. This lets `make check` create and
-  drive its disposable fixtures from inside a managed session. Even here the
-  wrapper denies `push`, `send-pack`, `receive-pack`, `http-push`, `remote-*`,
-  `notes`, `refs/notes`, `--no-verify`, `--exec*`, `--upload-pack*`, and any
-  alias (an alias such as `p = push` would expand without the guard), and it
-  turns off `help.autocorrect` so that a typo cannot become a push.
-- **Undetermined**: an unrecognized global option, a missing option value, or a
-  resolution error other than "not a git repository" is denied.
-
-The scope has limits. Only the options above and the current directory choose
-the target. Path arguments of an unrelated call are not inspected, for example
-`git init DIR`, `git clone SRC DST`, `--separate-git-dir` or `config --file`.
-The repository is resolved just before Git runs, not atomically with it.
-Commands that Git starts itself, such as hooks, `submodule foreach` or
-`rebase -x` in an unrelated repository, find the real Git on Git's exec path
-rather than the wrapper. The session pre-push hook still applies to them.
-
-These are executable operational guards, **not a hostile-code sandbox**. An
-agent with unrestricted shell access under your account can deliberately evade
-PATH/environment guards, use a native Git binary with verification disabled,
-or use a different network client. Alternative providers do not automatically
-receive the Claude tool hook. Do not treat the guards as a security boundary
-against malicious code; that would require OS/container isolation and a
-separate credential/network policy. Normal managed command paths reject pushes
-regardless of whether the agent remembers its prompt.
+These are operational guards, **not a hostile-code sandbox**. An agent with
+unrestricted shell access under your account can deliberately evade them: for
+example `git push --no-verify` or `git -c core.hooksPath=...` skips the
+session pre-push hook, and is refused only by the Claude shell-tool hook, which
+does not read scripts or other interpreters' code. An agent can also unset the
+session environment, use a different network client, or call the real `br`.
+Alternative providers do not automatically receive the Claude tool hook. Do not
+treat the guards as a security boundary against malicious code; that would
+require OS/container isolation and a separate credential/network policy.
+Ordinary pushes from managed sessions are refused regardless of whether the
+agent remembers its prompt.
 
 ## Validation scope
 
@@ -363,8 +344,9 @@ exit receipts, untracked-file preservation, blocked outcomes, comment retry and
 deduplication, integration conflicts, failed checks, ticket-closure retry,
 king closure without integration and its refusals, per-workspace issue
 prefixes against a decoy home Beads config,
-checked-out-target protection, and normal command guards, including Git
-calls in an unrelated repository from inside a managed session.
+checked-out-target protection, and the managed session's guards: no
+rk-provided Git on `PATH`, plain Git working in the session, and pushes refused
+by the session pre-push hook.
 
 The publication command's authorized argument construction is tested against a
 fake Git executable, so validation performs no actual pushes. Live model

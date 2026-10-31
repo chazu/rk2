@@ -269,11 +269,11 @@ func (s *Store) launch(repo *Repo, r *Run) error {
 	return nil
 }
 
-// launchEnv pins the real binaries for a new session's launcher. tmux passes
-// the client's PATH but not its other variables, so the launcher would
-// otherwise resolve Git and br again from a PATH that may hold a guard.
+// launchEnv pins the real br for a new session's launcher. tmux passes the
+// client's PATH but not its other variables, so the launcher would otherwise
+// resolve br again from a PATH that may hold a guard.
 func launchEnv() []string {
-	return []string{"-e", "RK_REAL_GIT=" + gitExecutable(), "-e", "RK_REAL_BR=" + beadsExecutable()}
+	return []string{"-e", "RK_REAL_BR=" + beadsExecutable()}
 }
 func (s *Store) Resume(id, message string) (*Run, error) {
 	unlock, e := s.lock()
