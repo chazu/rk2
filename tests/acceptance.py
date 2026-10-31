@@ -54,7 +54,7 @@ def wait_exit(run):
 def stopped(run):
     rk('stop', run['id'])
 
-def fixture(name):
+def fixture(name, check='["/bin/sh","-c","test -f base.txt"]'):
     repo = root / name
     repo.mkdir()
     git(repo, 'init', '-b', 'main')
@@ -69,7 +69,7 @@ def fixture(name):
     previous_exclude = exclude.read_text() + '\n# User exclusions\n/user-local/'
     exclude.write_text(previous_exclude)
     rk('init', str(repo), '--name', name, '--command', '["/bin/sh","-c","exit 0"]',
-       '--check', '["/bin/sh","-c","test -f base.txt"]')
+       *(('--check', check) if check else ()))
     assert (repo / '.gitignore').read_text() == '*.local\n'
     assert exclude.read_text().startswith(previous_exclude + '\n')
     assert exclude.read_text().splitlines().count('/.beads/') == 1
@@ -114,6 +114,13 @@ try:
     stopped(run)
     result = data('integrate', run['id'])
     assert result['state'] == 'integrated' and result['closed']
+    assert result['integration_check'] == 'passed: ["/bin/sh","-c","test -f base.txt"]'
+    assert runstate(run)['integration_check'] == result['integration_check']
+    report = [c['text'] for c in data('task', '--repo', 'demo', 'comments', 'list', issue)
+              if c['text'].startswith('Integrated locally')]
+    assert len(report) == 1, report
+    assert 'Integration check: ["/bin/sh","-c","test -f base.txt"] passed.' in report[0]
+    assert report[0].endswith('Rat-reported checks (not verified by integration): file verified')
     assert data('task', '--repo', 'demo', 'ready', '--json') is not None
     assert git(repo, 'rev-parse', 'main') == main_before
     assert git(repo, 'branch', '--show-current') == 'main'
@@ -332,6 +339,31 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert rk('integrate', run['id'], ok=False).returncode
     assert git(other, 'status', '--porcelain') == ''
     print('PASS checked-out integration target is protected')
+
+    # Without a configured check, integration still works but says plainly
+    # that no repository check ran; the rat's claim is labelled as its own.
+    fixture('nocheck', check=None)
+    issue = task('nocheck', 'unchecked integration')
+    run = data('spawn', 'rat', '--repo', 'nocheck', '--task', issue)
+    wait_exit(run); stopped(run)
+    wt = Path(run['worktree'])
+    (wt / 'unchecked.txt').write_text('unchecked\n')
+    git(wt, 'add', 'unchecked.txt')
+    git(wt, 'commit', '-m', 'unchecked work')
+    rk('finish', run['id'], '--summary', 'done', '--checks', 'make check passed')
+    p = rk('integrate', run['id'])
+    result = json.loads(p.stdout)
+    assert result['state'] == 'integrated' and result['integration_check'] == 'none configured'
+    assert 'no repository check ran' in p.stderr and 'rk config --repo nocheck --check JSON' in p.stderr
+    assert runstate(run)['integration_check'] == 'none configured'
+    report = [c['text'] for c in data('task', '--repo', 'nocheck', 'comments', 'list', issue)
+              if c['text'].startswith('Integrated locally')]
+    assert len(report) == 1, report
+    assert 'Integration check: none configured for this repository; no repository check ran.' in report[0]
+    assert 'rk config --repo nocheck --check JSON' in report[0]
+    assert 'passed' not in report[0].split('Rat-reported checks (not verified by integration): ')[0]
+    assert report[0].endswith('Rat-reported checks (not verified by integration): make check passed')
+    print('PASS integration reports its own check, or that none ran, apart from the rat\'s claim')
 
     # Scripted agents record every line typed into their terminal.
     echo = root / 'echo-agent.py'
