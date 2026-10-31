@@ -84,9 +84,8 @@ func denied(format string, a ...any) error {
 func undecidable(format string, a ...any) error {
 	return fmt.Errorf("managed command denied, cannot judge it: "+format, a...)
 }
-func realName(n string) bool { return n == "RK_REAL_GIT" || n == "RK_REAL_BR" }
 func protectedVar(n string) bool {
-	return n == "RK_ROLE" || n == "RK_RUN" || realName(n) || strings.HasPrefix(n, "GIT_CONFIG")
+	return n == "RK_ROLE" || n == "RK_RUN" || strings.HasPrefix(n, "GIT_CONFIG")
 }
 func nameBefore(s string) string {
 	if i := strings.IndexByte(s, '='); i >= 0 {
@@ -392,11 +391,7 @@ func (p *shParser) dollar(val *strings.Builder, inDQ bool) error {
 		for c := p.at(j); c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'; c = p.at(j) {
 			j++
 		}
-		name := string(p.src[p.pos+1 : p.pos+j])
 		p.pos += j
-		if realName(name) {
-			return denied("expands %s", name)
-		}
 	case n >= '0' && n <= '9' || n >= 0 && strings.ContainsRune("@*#?$!-", n):
 		p.pos += 2
 	default:
@@ -418,9 +413,6 @@ func (p *shParser) param(inDQ bool) error {
 		p.pos++
 	}
 	name := string(p.src[start:p.pos])
-	if realName(name) {
-		return denied("expands %s", name)
-	}
 	if protectedVar(name) && (p.has("=") || p.has(":=")) {
 		return denied("assigns %s", name)
 	}
@@ -771,9 +763,6 @@ func (p *shParser) run(c *shCmd, words []shWord, more bool) error {
 	w := words[0]
 	if w.dynamic() || w.pattern() {
 		return undecidable("command name %s is built at run time", show(w))
-	}
-	if strings.Contains(w.val, "RK_REAL_GIT") || strings.Contains(w.val, "RK_REAL_BR") {
-		return denied("names the real Git or Beads executable")
 	}
 	// Case-insensitive file systems run GIT as git.
 	name, args := strings.ToLower(path.Base(w.val)), words[1:]
