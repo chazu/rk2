@@ -20,6 +20,13 @@ env = {k: v for k, v in os.environ.items()
 env.update(RK_HOME=str(root / 'state'), TMUX_TMPDIR=str(root), RUST_LOG='error',
            RK_NUDGE_INTERVAL='300ms')
 
+# The br that rk itself runs, for fault wrappers and for driving a workspace
+# as the user would: skip run guard directories (ROOT/runs/ID/bin), as rk does
+# when the suite runs inside a managed session.
+realbr = shutil.which('br', path=os.pathsep.join(
+    d for d in env['PATH'].split(os.pathsep)
+    if not (Path(d).name == 'bin' and Path(d).parent.parent.name == 'runs')))
+
 def command(args, cwd=None, ok=True, extra=None):
     p = subprocess.run(args, cwd=cwd, env={**env, **(extra or {})},
                        capture_output=True, text=True, timeout=40)
@@ -39,6 +46,12 @@ def git(repo, *args):
 def task(repo, title):
     return data('task', '--repo', repo, 'create', title)['id']
 
+def integration_reports(repo, issue):
+    # Delivered comments carry an "[rk:MESSAGE_ID] " deduplication marker.
+    texts = [c['text'].split('] ', 1)[1] if c['text'].startswith('[rk:') else c['text']
+             for c in data('task', '--repo', repo, 'comments', 'list', issue)]
+    return [t for t in texts if t.startswith('Integrated locally')]
+
 def runstate(run):
     return data('show', run['id'])
 
@@ -54,7 +67,7 @@ def wait_exit(run):
 def stopped(run):
     rk('stop', run['id'])
 
-def fixture(name):
+def fixture(name, check='["/bin/sh","-c","test -f base.txt"]'):
     repo = root / name
     repo.mkdir()
     git(repo, 'init', '-b', 'main')
@@ -69,7 +82,7 @@ def fixture(name):
     previous_exclude = exclude.read_text() + '\n# User exclusions\n/user-local/'
     exclude.write_text(previous_exclude)
     rk('init', str(repo), '--name', name, '--command', '["/bin/sh","-c","exit 0"]',
-       '--check', '["/bin/sh","-c","test -f base.txt"]')
+       *(('--check', check) if check else ()))
     assert (repo / '.gitignore').read_text() == '*.local\n'
     assert exclude.read_text().startswith(previous_exclude + '\n')
     assert exclude.read_text().splitlines().count('/.beads/') == 1
@@ -114,6 +127,12 @@ try:
     stopped(run)
     result = data('integrate', run['id'])
     assert result['state'] == 'integrated' and result['closed']
+    assert result['integration_check'] == 'passed: ["/bin/sh","-c","test -f base.txt"]'
+    assert runstate(run)['integration_check'] == result['integration_check']
+    report = integration_reports('demo', issue)
+    assert len(report) == 1, report
+    assert 'Integration check: ["/bin/sh","-c","test -f base.txt"] passed.' in report[0]
+    assert report[0].endswith('Rat-reported checks (not verified by integration): file verified')
     assert data('task', '--repo', 'demo', 'ready', '--json') is not None
     assert git(repo, 'rev-parse', 'main') == main_before
     assert git(repo, 'branch', '--show-current') == 'main'
@@ -134,6 +153,30 @@ try:
     rk('clean', run['id'], '--discard')
     assert data('task', '--repo', 'demo', 'show', issue)[0]['status'] == 'open'
     print('PASS blocked outcome does not close ticket; explicit discard releases claim')
+
+    # The king closes a discarded task without integration; nothing else may.
+    def close(task_id, *args, extra=None):
+        return rk('task', '--repo', 'demo', 'close', task_id, *args, ok=False, extra=extra)
+    assert 'usage' in close(issue).stderr
+    assert '--reason is required' in close(issue, '--reason', '  ').stderr
+    denied = close(issue, '--reason', 'abandoned', extra={'RK_ROLE': 'rat', 'RK_RUN': run['id']})
+    assert denied.returncode and 'rats cannot close' in denied.stderr
+    assert data('task', '--repo', 'demo', 'show', issue)[0]['status'] == 'open'
+    live = data('spawn', 'rat', '--repo', 'demo', '--task', task('demo', 'ready result'))
+    wait_exit(live)
+    rk('finish', live['id'], '--summary', 'no changes', '--checks', 'fixture')
+    refused = close(live['task'], '--reason', 'not wanted')
+    assert refused.returncode and live['id'] in refused.stderr and 'discard' in refused.stderr
+    assert data('task', '--repo', 'demo', 'show', live['task'])[0]['status'] == 'in_progress'
+    stopped(live); rk('clean', live['id'], '--discard')
+    closed = data('task', '--repo', 'demo', 'close', issue, '--reason', 'abandoned after discard')
+    assert closed['status'] == 'closed', closed
+    notes = data('task', '--repo', 'demo', 'comments', 'list', issue)
+    assert any('without integration: abandoned after discard' in c['text'] for c in notes), notes
+    again = close(issue, '--reason', 'again')
+    assert again.returncode and 'already closed' in again.stderr
+    assert data('task', '--repo', 'demo', 'show', issue)[0]['status'] == 'closed'
+    print('PASS king closes discarded task with reason; live runs, rats, no reason, re-close refused')
 
     # Fail startup after ownership has been acquired, then resume that same run.
     issue = task('demo', 'recover failed startup')
@@ -170,8 +213,20 @@ git status --porcelain
 printf 'hook-check\\n' > hook-check.txt
 git add hook-check.txt
 git commit -m 'verify original hook context'
+unrelated=UNRELATED
+mkdir "$unrelated"
+git -C "$unrelated" init -q -b main
+git -C "$unrelated" -c user.name=Probe -c user.email=probe@example.invalid -c commit.gpgsign=false \\
+  commit -q --allow-empty -m unrelated
+git -C "$unrelated" init -q --bare remote.git
+if out=$(git -C "$unrelated" push remote.git main 2>&1); then exit 36; fi
+case "$out" in *'Git command "push" denied'*) ;; *) echo "$out"; exit 37 ;; esac
+if git -C "$unrelated" -c alias.p=push p remote.git main; then exit 38; fi
+if out=$(git worktree add ../escape-worktree 2>&1); then exit 39; fi
+case "$out" in *'Git command "worktree" denied'*) ;; *) echo "$out"; exit 40 ;; esac
+if git -C DEMO worktree add ../escape-main; then exit 41; fi
 printf 'guards-passed\\n' > guard-evidence.txt
-''')
+'''.replace('UNRELATED', str(root / 'unrelated')).replace('DEMO', str(repo)))
     probe.chmod(0o700)
     rk('config', '--repo', 'demo', '--command', json.dumps(['/bin/sh', str(probe)]))
     run = data('spawn', 'rat', '--repo', 'demo', '--task', issue)
@@ -179,11 +234,17 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert final['exit_code'] == 0, final
     assert (Path(run['worktree']) / 'guard-evidence.txt').read_text() == 'guards-passed\n'
     assert 'denied' in rk('logs', run['id']).stdout
+    # Outside registered repositories Git runs normally, but cannot publish.
+    assert (root / 'unrelated/.git').is_dir()
+    assert command(['git', '-C', str(root / 'unrelated/remote.git'), 'rev-parse', '--verify', '-q',
+                    'refs/heads/main'], ok=False).returncode
+    worktrees = [l for l in git(repo, 'worktree', 'list', '--porcelain').splitlines() if l.startswith('worktree ')]
+    assert len(worktrees) == 2, worktrees  # the main checkout and this rat's
     # Neither shared config nor main's hook lookup was overwritten.
     assert not command(['git', '-C', str(repo), 'config', '--get', 'core.hooksPath'], ok=False).stdout
     stopped(run); rk('clean', run['id'], '--discard')
     assert rk('publish', '--repo', 'demo', '--remote', 'origin', '--branch', 'main', ok=False).returncode
-    print('PASS managed command guards, logs, no hook config changes, missing push authorization')
+    print('PASS managed command guards, unrelated-repo pass-through without publication, logs, no hook config changes, missing push authorization')
 
     # Conflicting results retain the source and candidate; target stays unchanged.
     rk('config', '--repo', 'demo', '--command', '["/bin/sh","-c","exit 0"]')
@@ -266,7 +327,6 @@ printf 'guards-passed\\n' > guard-evidence.txt
     print('PASS four concurrent rk claim attempts produce one winner')
 
     # Delivery failure saves the result, then retries without duplicate comments.
-    realbr = shutil.which('br')
     fault = root / 'fault-br.sh'
     fault.write_text('#!/bin/sh\nif [ "$1" = comments ]; then exit 77; fi\nexec ' + realbr + ' "$@"\n')
     fault.chmod(0o700)
@@ -308,6 +368,30 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert rk('integrate', run['id'], ok=False).returncode
     assert git(other, 'status', '--porcelain') == ''
     print('PASS checked-out integration target is protected')
+
+    # Without a configured check, integration still works but says plainly
+    # that no repository check ran; the rat's claim is labelled as its own.
+    fixture('nocheck', check=None)
+    issue = task('nocheck', 'unchecked integration')
+    run = data('spawn', 'rat', '--repo', 'nocheck', '--task', issue)
+    wait_exit(run); stopped(run)
+    wt = Path(run['worktree'])
+    (wt / 'unchecked.txt').write_text('unchecked\n')
+    git(wt, 'add', 'unchecked.txt')
+    git(wt, 'commit', '-m', 'unchecked work')
+    rk('finish', run['id'], '--summary', 'done', '--checks', 'make check passed')
+    p = rk('integrate', run['id'])
+    result = json.loads(p.stdout)
+    assert result['state'] == 'integrated' and result['integration_check'] == 'none configured'
+    assert 'no repository check ran' in p.stderr and 'rk config --repo nocheck --check JSON' in p.stderr
+    assert runstate(run)['integration_check'] == 'none configured'
+    report = integration_reports('nocheck', issue)
+    assert len(report) == 1, report
+    assert 'Integration check: none configured for this repository; no repository check ran.' in report[0]
+    assert 'rk config --repo nocheck --check JSON' in report[0]
+    assert 'passed' not in report[0].split('Rat-reported checks (not verified by integration): ')[0]
+    assert report[0].endswith('Rat-reported checks (not verified by integration): make check passed')
+    print('PASS integration reports its own check, or that none ran, apart from the rat\'s claim')
 
     # Scripted agents record every line typed into their terminal.
     echo = root / 'echo-agent.py'
@@ -356,6 +440,80 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert fresh['id'] != king['id'] and data('show', 'king')['id'] == fresh['id']
     data('dismiss', 'king')
     print('PASS king restart, dismissal and fresh spawn')
+    # A workspace without its own issue_prefix inherits the user's
+    # ~/.beads/config.yaml. The decoy home lives inside this temp root.
+    home = root / 'home'
+    (home / '.beads').mkdir(parents=True)
+    (home / '.beads/config.yaml').write_text('issue_prefix: decoy\n')
+    decoy = {'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config')}
+    def hdata(*args):
+        return json.loads(rk(*args, extra=decoy).stdout)
+    def plain_repo(name):
+        repo = home / name
+        repo.mkdir()
+        git(repo, 'init', '-b', 'main')
+        git(repo, 'config', 'user.name', 'Acceptance')
+        git(repo, 'config', 'user.email', 'acceptance@example.invalid')
+        git(repo, 'config', 'commit.gpgsign', 'false')
+        (repo / 'base.txt').write_text('base\n')
+        git(repo, 'add', 'base.txt')
+        git(repo, 'commit', '-m', 'initial')
+        return repo
+    def br_here(repo, *args):
+        return command([realbr, *args, '--no-auto-flush', '--no-auto-import'], cwd=repo,
+                       extra={**decoy, 'BEADS_DIR': str(repo / '.beads')}).stdout
+    def prefix_of(name):
+        view = next(r for r in hdata('repos') if r['name'] == name)
+        return view['issue_prefix'], view['issue_prefix_source']
+    def htask(name, title):
+        return hdata('task', '--repo', name, 'create', title)['id']
+    def hshow(name, issue):
+        return hdata('task', '--repo', name, 'show', issue)[0]['id']
+    no_agent = ('--command', '["/bin/sh","-c","exit 0"]')
+
+    rk('init', str(plain_repo('Prefix_Demo')), *no_agent, extra=decoy)
+    assert prefix_of('Prefix_Demo') == ('prefix-demo', 'workspace')
+    assert htask('Prefix_Demo', 'own prefix').startswith('prefix-demo-')
+    rk('init', str(plain_repo('override')), *no_agent, '--prefix', 'ovr', extra=decoy)
+    assert prefix_of('override') == ('ovr', 'workspace')
+    assert htask('override', 'override prefix').startswith('ovr-')
+    assert rk('init', str(plain_repo('badprefix')), *no_agent, '--prefix', 'Bad_X',
+              ok=False, extra=decoy).returncode
+    print('PASS new workspaces get their own issue prefix despite a decoy home config')
+
+    adopted = plain_repo('adopted')
+    br_here(adopted, 'init')
+    leaked = json.loads(br_here(adopted, 'create', 'before rk', '--json'))['id']
+    assert leaked.startswith('decoy-'), leaked
+    rk('init', str(adopted), *no_agent, extra=decoy)
+    assert prefix_of('adopted') == ('adopted', 'workspace')
+    assert htask('adopted', 'after rk').startswith('adopted-')
+    assert hshow('adopted', leaked) == leaked
+    keeper = plain_repo('keeper')
+    br_here(keeper, 'init')
+    br_here(keeper, 'config', 'set', 'issue_prefix', 'keep')
+    rk('init', str(keeper), *no_agent, extra=decoy)
+    assert prefix_of('keeper') == ('keep', 'workspace')
+    assert htask('keeper', 'kept').startswith('keep-')
+    print('PASS adopting a workspace sets a missing prefix and keeps an explicit one')
+
+    # Simulate a workspace registered before rk managed prefixes.
+    config = adopted / '.beads/config.yaml'
+    config.write_text(''.join(l for l in config.read_text().splitlines(True)
+                              if not l.startswith('issue_prefix:')))
+    prefix, source = prefix_of('adopted')
+    assert prefix == 'decoy' and source.startswith('inherited'), (prefix, source)
+    older = htask('adopted', 'still inherited')
+    assert older.startswith('decoy-')
+    assert rk('config', '--repo', 'adopted', '--prefix', 'Bad_X', ok=False, extra=decoy).returncode
+    view = hdata('config', '--repo', 'adopted', '--prefix', 'adopted2')
+    assert (view['issue_prefix'], view['issue_prefix_source']) == ('adopted2', 'workspace')
+    assert htask('adopted', 'renamed prefix').startswith('adopted2-')
+    for issue in (leaked, older):
+        assert hshow('adopted', issue) == issue
+    assert hdata('config', '--repo', 'keeper', '--max-rats', '2')['issue_prefix'] == 'keep'
+    assert (home / '.beads/config.yaml').read_text() == 'issue_prefix: decoy\n'
+    print('PASS rk config sets a registered workspace prefix without renaming issues')
     print(f'Acceptance artifacts: {root}')
 finally:
     # Isolated server only: TMUX_TMPDIR points inside this test directory.

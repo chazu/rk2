@@ -38,6 +38,9 @@ REWORK AND RECOVERY
 - Blocked: the task stays open. Resolve the blocker, or ask the user.
 - Crashed with useful work: rk resume RUN --message TEXT reuses its worktree and claim.
 - Unwanted work: discard it only on the user's explicit request (rk clean RUN --discard).
+- Closing without integration (after a discard, or a duplicate or won't-do task):
+  rk task --repo NAME close TASK --reason TEXT. It refuses while any run of the
+  task is not discarded or cleaned.
 Never discard useful work without the user's explicit request.
 
 PUBLICATION

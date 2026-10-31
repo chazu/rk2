@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func (s *Store) Init(path, name, target string, command, check []string, max int) (*Repo, error) {
+func (s *Store) Init(path, name, target string, command, check []string, max int, prefix string) (*RepoView, error) {
 	unlock, e := s.lock()
 	if e != nil {
 		return nil, e
@@ -33,6 +33,13 @@ func (s *Store) Init(path, name, target string, command, check []string, max int
 	}
 	if !safeID(name) {
 		return nil, errors.New("invalid repository name")
+	}
+	if prefix != "" && !validPrefix(prefix) {
+		return nil, fmt.Errorf("invalid issue prefix %q: use lowercase letters, digits and single inner hyphens", prefix)
+	}
+	fallback := prefix
+	if fallback == "" {
+		fallback = defaultPrefix(name)
 	}
 	repos, e := s.Repos()
 	if e != nil {
@@ -59,11 +66,7 @@ func (s *Store) Init(path, name, target string, command, check []string, max int
 	if e = excludeLocalBeads(common); e != nil {
 		return nil, fmt.Errorf("exclude local Beads data: %w", e)
 	}
-	if _, e = os.Stat(r.BeadsDir); errors.Is(e, os.ErrNotExist) {
-		if _, e = beads(r, "king", "init"); e != nil {
-			return nil, e
-		}
-	} else if e != nil {
+	if e = initWorkspace(r, prefix, fallback); e != nil {
 		return nil, e
 	}
 	if _, e = beads(r, "king", "config", "set", "claim_exclusive", "true"); e != nil {
@@ -80,9 +83,13 @@ func (s *Store) Init(path, name, target string, command, check []string, max int
 	if e = s.saveRepo(r); e != nil {
 		return nil, e
 	}
-	return r, nil
+	v := viewRepo(r)
+	return &v, nil
 }
-func (s *Store) Config(id string, command, check []string, max int) (*Repo, error) {
+
+// Config changes rk's settings for a repository. A prefix is written to the
+// Beads workspace config; existing issues keep their IDs.
+func (s *Store) Config(id string, command, check []string, max int, prefix string) (*RepoView, error) {
 	unlock, e := s.lock()
 	if e != nil {
 		return nil, e
@@ -104,7 +111,16 @@ func (s *Store) Config(id string, command, check []string, max int) (*Repo, erro
 	if max > 0 {
 		r.MaxRats = max
 	}
-	return r, s.saveRepo(r)
+	if prefix != "" {
+		if e = setPrefix(r, prefix); e != nil {
+			return nil, e
+		}
+	}
+	if e = s.saveRepo(r); e != nil {
+		return nil, e
+	}
+	v := viewRepo(r)
+	return &v, nil
 }
 func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 	unlock, e := s.lock()
@@ -331,6 +347,7 @@ func (s *Store) Resume(id, message string) (*Run, error) {
 	r.Commit = ""
 	r.Checks = ""
 	r.IntegratedCommit = ""
+	r.IntegrationCheck = ""
 	queue(r, "Resuming existing worktree. "+message, "king")
 	if e = s.launch(repo, r); e != nil {
 		r.Process = "not_started"
@@ -583,6 +600,52 @@ func closeIntegrated(repo *Repo, r *Run) error {
 		r.Closed = true
 	}
 	return e
+}
+
+// CloseTask closes a task without integration, e.g. after rk clean --discard or
+// for duplicate or abandoned work. It refuses while any run of the task could
+// still hold a claim or unintegrated work, and when the task is already closed.
+func (s *Store) CloseTask(repoName, id, reason string) (*Task, error) {
+	unlock, e := s.lock()
+	if e != nil {
+		return nil, e
+	}
+	defer unlock()
+	repo, e := s.Repo(repoName)
+	if e != nil {
+		return nil, e
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return nil, errors.New("--reason is required to close a task without integration")
+	}
+	t, e := getTask(repo, id)
+	if e != nil {
+		return nil, e
+	}
+	if t.Status == "closed" {
+		return nil, fmt.Errorf("task %s is already closed; nothing changed", id)
+	}
+	rs, e := s.Runs()
+	if e != nil {
+		return nil, e
+	}
+	blocking := []string{}
+	for _, r := range rs {
+		if r.RepoID == repo.ID && r.Task == id && r.State != "discarded" && r.State != "cleaned" {
+			blocking = append(blocking, fmt.Sprintf("%s (%s, %s, process %s)", r.ID, r.Name, r.State, r.Process))
+		}
+	}
+	if len(blocking) > 0 {
+		return nil, fmt.Errorf("task %s has runs that may hold its claim or work: %s; stop and integrate them, or rk clean RUN --discard them first", id, strings.Join(blocking, ", "))
+	}
+	if t.Assignee != "" {
+		return nil, fmt.Errorf("task %s is %s, claimed by %q outside any open run; release that claim first", id, t.Status, t.Assignee)
+	}
+	if _, e = beads(repo, "king", "close", id, "--reason", reason, "--transition-comment", "Closed by the king without integration: "+reason); e != nil {
+		return nil, e
+	}
+	return getTask(repo, id)
 }
 func parseCommand(s string) ([]string, error) {
 	var args []string

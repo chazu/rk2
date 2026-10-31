@@ -3,7 +3,9 @@ package kingdom
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -26,14 +28,141 @@ func TestGitGuard(t *testing.T) {
 	}
 }
 func TestProviderGuard(t *testing.T) {
-	for _, cmd := range []string{"git push origin main", "/usr/bin/git push", "git -C . push --no-verify", "git notes add", "git config core.hooksPath /dev/null"} {
-		b, _ := json.Marshal(map[string]any{"tool_input": map[string]string{"command": cmd}})
-		if e := CheckShell(bytes.NewReader(b)); e == nil {
-			t.Errorf("allowed %s", cmd)
+	allowed := []string{
+		"go test ./...",
+		`rk task create --description "no pushes, no git notes"`,
+		`rk task create --description "no git notes"`,
+		`br comments add x "do not set RK_ROLE=king, unset RK_RUN, or export GIT_CONFIG_COUNT"`,
+		`echo 'git push'`,
+		`echo "git push --no-verify; git -c core.hooksPath=/x commit"`,
+		"cat <<EOF\ngit push origin main\ngit notes add\nEOF",
+		"cat <<'EOF' > notes.txt\n$(git push)\nEOF",
+		"cat <<-EOF | grep push\n\tgit push\n\tEOF\necho done",
+		`grep -rn "git push" .`,
+		`grep -n 'RK_REAL_GIT\|core.hooksPath\|refs/notes' internal/kingdom/*.go`,
+		`sed -n 's/git notes/x/p' README.md`,
+		"# git push\ngo build ./...",
+		"echo ok # git push",
+		`git commit -m "Explain why no git push happens here"`,
+		`git commit -am "fix push button" --author "A <a@b>"`,
+		"git commit -m \"$(cat <<'EOF'\nNo git push or git notes; RK_ROLE=king in prose.\nEOF\n)\" && git log -1",
+		"git commit -m '-n is just text'",
+		"git stash push -u -m tag",
+		"if [[ $x =~ ^a(b|c)$ ]]; then echo y; fi",
+		"git status --porcelain && git diff HEAD~1",
+		"git -C /tmp/repo log -3 --oneline",
+		"/usr/bin/git status",
+		`git log @{u}..HEAD --grep push`,
+		"command -v git",
+		"ls | xargs grep push",
+		`for f in *.go; do gofmt -l "$f"; done`,
+		`case "$x" in push) echo push;; *) echo other;; esac`,
+		`echo "$(case $x in (a|b) echo a ;; esac)"`,
+		"echo $RK_ROLE $RK_RUN",
+		`bash -c 'go vet ./...'`,
+		"x=$(git rev-parse HEAD); echo \"$x\"",
+		"make check 2>&1 | tail -20",
+		`[[ -n "$RK_RUN" && -d .git ]] && echo yes`,
+		"find . -name '*.go' -exec gofmt -l {} +",
+		`printf '%s\n' RK_ROLE=king`,
+		"f() { go test ./...; }; f",
+		"arr=(git push); echo ${#arr[@]}",
+		"echo $((1 + 2))",
+		"while read -r line; do echo \"$line\"; done < file",
+	}
+	for _, cmd := range allowed {
+		if e := checkShellCommand(cmd); e != nil {
+			t.Errorf("rejected %q: %v", cmd, e)
 		}
 	}
-	if e := CheckShell(strings.NewReader(`{"tool_input":{"command":"go test ./..."}}`)); e != nil {
+	denied := []string{
+		"git push",
+		"git push origin main",
+		"/usr/bin/git push origin x",
+		"/usr/bin/Git push",
+		"git -C dir push",
+		"git -C . push --no-verify",
+		"git --git-dir=.git push",
+		`bash -c "git push"`,
+		"sh -lc 'cd x && git push'",
+		`eval "git push"`,
+		"env RK_ROLE=king rk task list",
+		"export RK_ROLE=king",
+		"declare -x RK_RUN=x",
+		"RK_ROLE=king rk x",
+		"unset RK_RUN",
+		"unset GIT_CONFIG_COUNT",
+		"env -u RK_ROLE rk x",
+		"env -i rk task list",
+		"git commit --no-verify -m x",
+		"git commit --no-verif -m x",
+		"git commit -nm x",
+		"git -c core.hooksPath=/x commit",
+		"git config core.hooksPath /dev/null",
+		"git -c alias.p=push p",
+		"GIT_CONFIG_COUNT=0 git commit -m x",
+		"$(echo git) push",
+		"`echo git` push",
+		`"$G" push`,
+		"git $SUB",
+		"git {push,x}",
+		"echo ok && git push",
+		"(cd x; git push)",
+		"{ git push; }",
+		"if true; then git push; fi",
+		"! git push",
+		"x=$(git push)",
+		`echo "$(git push)"`,
+		"echo <(git push)",
+		"cat <<EOF\n$(git push)\nEOF",
+		"git notes add -m x",
+		"git fetch origin +refs/notes/commits:refs/notes/commits",
+		"git send-pack x",
+		"git-receive-pack .",
+		"/usr/libexec/git-core/git-send-pack x",
+		`"$RK_REAL_GIT" push`,
+		"$RK_REAL_GIT status",
+		"${RK_REAL_BR} list",
+		"RK_REAL_GIT status",
+		"sudo -u root git push",
+		"nohup git push &",
+		"command git push",
+		"exec git push",
+		"time git push",
+		"timeout 5 git push",
+		"echo push | xargs git",
+		"echo push | xargs -I{} git {}",
+		`find . -exec git push \;`,
+		"echo git push | bash",
+		"bash <<EOF\ngit push\nEOF",
+		"bash <<< 'git push'",
+		"git rebase -x 'git push' main",
+		"for RK_ROLE in king; do rk x; done",
+		"echo ${RK_ROLE:=king}",
+		"read RK_ROLE <<< king",
+		"printf -v RK_ROLE king",
+		`$'\x67it' push`,
+		`g\it push`,
+		`"git" push`,
+		"alias g='git push'",
+		"trap 'git push' EXIT",
+		"echo 'unterminated",
+		"echo $(git status",
+	}
+	for _, cmd := range denied {
+		if e := checkShellCommand(cmd); e == nil {
+			t.Errorf("allowed %q", cmd)
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"tool_input": map[string]string{"command": "git -C . push"}})
+	if e := CheckShell(bytes.NewReader(b)); e == nil {
+		t.Error("hook allowed git push")
+	}
+	if e := CheckShell(strings.NewReader(`{"tool_input":{"command":"rk task create --description \"no git notes\""}}`)); e != nil {
 		t.Fatal(e)
+	}
+	if e := CheckShell(strings.NewReader(`not json`)); e == nil {
+		t.Error("hook allowed malformed input")
 	}
 }
 func TestStateAtomicReadersAndLock(t *testing.T) {
@@ -163,7 +292,7 @@ func TestRunPathDropsOtherRunsGuards(t *testing.T) {
 	}
 }
 func TestPublishRequiresRequestBeforeGit(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s, _ := Open(hermetic(t))
 	if e := s.Publish("missing", "origin", "main", ""); e == nil || !strings.Contains(e.Error(), "request") {
 		t.Fatal(e)
 	}
@@ -187,7 +316,7 @@ func TestAtomicFileModes(t *testing.T) {
 }
 
 func TestPublicationPinsOneRefAndDoesNotActuallyPush(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s, _ := Open(hermetic(t))
 	repo := &Repo{ID: "example", Name: "example", Path: t.TempDir()}
 	if e := s.saveRepo(repo); e != nil {
 		t.Fatal(e)
@@ -287,7 +416,7 @@ func TestLocalBeadsExclusionCreatesMissingInfoDirectory(t *testing.T) {
 	}
 }
 func TestOneKingSystemWide(t *testing.T) {
-	home := t.TempDir()
+	home := hermetic(t)
 	s, _ := Open(home)
 	if _, e := s.King(); e == nil || !strings.Contains(e.Error(), "rk spawn king") {
 		t.Fatalf("expected spawn hint, got %v", e)
@@ -382,5 +511,204 @@ func TestKingPromptNamesNoRepository(t *testing.T) {
 	env := strings.Join(s.runEnv(repo, rat), "\n")
 	if !strings.Contains(env, "BEADS_DIR=/x/launchrepo/.beads") || !strings.Contains(env, "RK_REPO=r1") {
 		t.Fatalf("rat lost its repository environment:\n%s", env)
+	}
+}
+func TestTaskCloseArgumentsAndRole(t *testing.T) {
+	id, reason, e := closeArgs([]string{"bd-1", "--reason", "duplicate", "--json"})
+	if e != nil || id != "bd-1" || reason != "duplicate" {
+		t.Fatalf("got %q %q %v", id, reason, e)
+	}
+	if id, reason, e = closeArgs([]string{"--reason=won't do", "bd-2"}); e != nil || id != "bd-2" || reason != "won't do" {
+		t.Fatalf("got %q %q %v", id, reason, e)
+	}
+	for _, args := range [][]string{{"bd-1"}, {"--reason", "x"}, {"bd-1", "--reason"}, {"bd-1", "bd-2", "--reason", "x"}, {"bd-1", "--reason", "x", "--force"}} {
+		if _, _, e := closeArgs(args); e == nil || !strings.Contains(e.Error(), "usage") {
+			t.Errorf("accepted %v: %v", args, e)
+		}
+	}
+	home := t.TempDir()
+	t.Setenv("RK_ROLE", "rat")
+	t.Setenv("RK_RUN", "somerat")
+	e = Main([]string{"task", "--home", home, "close", "bd-1", "--reason", "abandoned"}, io.Discard)
+	if e == nil || !strings.Contains(e.Error(), "rats cannot close") {
+		t.Fatal(e)
+	}
+	t.Setenv("RK_ROLE", "")
+	t.Setenv("RK_RUN", "")
+	if e = Main([]string{"task", "--home", home, "close", "bd-1"}, io.Discard); e == nil || !strings.Contains(e.Error(), "usage") {
+		t.Fatal(e)
+	}
+}
+
+func TestIntegrationReportSeparatesOwnCheckFromRatReport(t *testing.T) {
+	repo := &Repo{Name: "demo"}
+	ratClaim := "NOT RUN: make check acceptance stage"
+	r := &Run{Target: "rk/integration", IntegratedCommit: "abc123", Checks: ratClaim,
+		IntegrationCheck: "passed: " + checkLabel([]string{"make", "check"})}
+	got := integrationReport(repo, r)
+	for _, want := range []string{"Integration check: [\"make\",\"check\"] passed.", "Rat-reported checks (not verified by integration): " + ratClaim} {
+		if !strings.Contains(got, want) {
+			t.Errorf("configured report %q lacks %q", got, want)
+		}
+	}
+	r.IntegrationCheck = noIntegrationCheck
+	got = integrationReport(repo, r)
+	for _, want := range []string{"Integration check: none configured for this repository; no repository check ran.", "rk config --repo demo --check JSON", "Rat-reported checks (not verified by integration): " + ratClaim} {
+		if !strings.Contains(got, want) {
+			t.Errorf("unconfigured report %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "passed") || strings.Index(got, ratClaim) < strings.Index(got, "Rat-reported checks") {
+		t.Errorf("rat's checks presented as the integration result: %q", got)
+	}
+	r.Checks = ""
+	if got = integrationReport(repo, r); strings.Contains(got, "Rat-reported") {
+		t.Errorf("empty rat report still labelled: %q", got)
+	}
+}
+func TestIssuePrefixRules(t *testing.T) {
+	for name, want := range map[string]string{"rk2": "rk2", "My_Project.v2": "my-project-v2", "--Odd  Name--": "odd-name", "___": ""} {
+		if got := defaultPrefix(name); got != want {
+			t.Errorf("defaultPrefix(%q) = %q, want %q", name, got, want)
+		}
+	}
+	for p, want := range map[string]bool{"rk2": true, "my-proj": true, "": false, "-a": false, "a-": false, "a--b": false, "Bad": false, "a_b": false} {
+		if validPrefix(p) != want {
+			t.Errorf("validPrefix(%q) != %v", p, want)
+		}
+	}
+	dir := t.TempDir()
+	repo := &Repo{BeadsDir: dir}
+	for text, want := range map[string]string{
+		"# Beads Project Configuration\n# issue_prefix: repo\n": "",
+		"claim_exclusive: true\nissue_prefix: mine\n":           "mine",
+		"issue_prefix: \"quoted\" # note\n":                     "quoted",
+		"nested:\n  issue_prefix: deep\n":                       "",
+	} {
+		if e := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(text), 0o644); e != nil {
+			t.Fatal(e)
+		}
+		if got, e := workspacePrefix(repo); e != nil || got != want {
+			t.Errorf("workspacePrefix(%q) = %q, %v; want %q", text, got, e, want)
+		}
+	}
+}
+
+// Real br against disposable workspaces whose user config is a decoy home
+// inside the test directory, never the real one.
+func TestWorkspacesGetOwnIssuePrefix(t *testing.T) {
+	if _, e := exec.LookPath(beadsExecutable()); e != nil {
+		t.Skip("br not installed")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	decoy := filepath.Join(home, ".beads", "config.yaml")
+	if e := os.MkdirAll(filepath.Dir(decoy), 0o755); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.WriteFile(decoy, []byte("issue_prefix: decoy\n"), 0o644); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	workspace := func(name string) *Repo {
+		dir := filepath.Join(home, name)
+		if e := os.MkdirAll(dir, 0o755); e != nil {
+			t.Fatal(e)
+		}
+		return &Repo{ID: name, Name: name, Path: dir, BeadsDir: filepath.Join(dir, ".beads"), Target: "rk/integration", Command: []string{"true"}, MaxRats: 1}
+	}
+	create := func(r *Repo, title string) string {
+		b, e := beads(r, "king", "create", title)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var v struct {
+			ID string `json:"id"`
+		}
+		if e = json.Unmarshal(b, &v); e != nil {
+			t.Fatal(e)
+		}
+		return v.ID
+	}
+	expect := func(r *Repo, prefix string, ids ...string) {
+		t.Helper()
+		if v := viewRepo(r); v.IssuePrefix != prefix || v.IssuePrefixSource != "workspace" {
+			t.Fatalf("%s: prefix %q from %q, want %q from workspace", r.Name, v.IssuePrefix, v.IssuePrefixSource, prefix)
+		}
+		if id := create(r, "new"); !strings.HasPrefix(id, prefix+"-") {
+			t.Fatalf("%s: new task %s lacks prefix %s", r.Name, id, prefix)
+		}
+		for _, id := range ids {
+			if task, e := getTask(r, id); e != nil || task.ID != id {
+				t.Fatalf("%s: existing task %s not kept: %v", r.Name, id, e)
+			}
+		}
+	}
+
+	fresh := workspace("fresh")
+	if e := initWorkspace(fresh, "", "fresh"); e != nil {
+		t.Fatal(e)
+	}
+	expect(fresh, "fresh")
+	override := workspace("override")
+	if e := initWorkspace(override, "ovr", "ovr"); e != nil {
+		t.Fatal(e)
+	}
+	expect(override, "ovr")
+
+	adopted := workspace("adopted")
+	if _, e := beads(adopted, "king", "init"); e != nil {
+		t.Fatal(e)
+	}
+	leaked := create(adopted, "before rk")
+	if !strings.HasPrefix(leaked, "decoy-") {
+		t.Fatalf("fixture did not reproduce the leak: %s", leaked)
+	}
+	if e := initWorkspace(adopted, "", "adopted"); e != nil {
+		t.Fatal(e)
+	}
+	expect(adopted, "adopted", leaked)
+	keeper := workspace("keeper")
+	if _, e := beads(keeper, "king", "init"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := beads(keeper, "king", "config", "set", "issue_prefix", "keep"); e != nil {
+		t.Fatal(e)
+	}
+	if e := initWorkspace(keeper, "", "keeper"); e != nil {
+		t.Fatal(e)
+	}
+	expect(keeper, "keep")
+
+	// A workspace registered before rk managed prefixes, fixed with rk config.
+	s, _ := Open(filepath.Join(root, "state"))
+	if e := s.saveRepo(adopted); e != nil {
+		t.Fatal(e)
+	}
+	config := filepath.Join(adopted.BeadsDir, "config.yaml")
+	b, _ := os.ReadFile(config)
+	kept := []string{}
+	for _, l := range strings.SplitAfter(string(b), "\n") {
+		if !strings.HasPrefix(l, "issue_prefix:") {
+			kept = append(kept, l)
+		}
+	}
+	if e := os.WriteFile(config, []byte(strings.Join(kept, "")), 0o644); e != nil {
+		t.Fatal(e)
+	}
+	if v := viewRepo(adopted); v.IssuePrefix != "decoy" || !strings.HasPrefix(v.IssuePrefixSource, "inherited") {
+		t.Fatalf("inherited prefix not reported: %+v", v)
+	}
+	older := create(adopted, "still inherited")
+	if _, e := s.Config("adopted", nil, nil, 0, "Bad_X"); e == nil {
+		t.Fatal("accepted invalid prefix")
+	}
+	if v, e := s.Config("adopted", nil, nil, 0, "adopted2"); e != nil || v.IssuePrefix != "adopted2" {
+		t.Fatalf("config prefix: %+v %v", v, e)
+	}
+	expect(adopted, "adopted2", leaked, older)
+	if b, _ := os.ReadFile(decoy); string(b) != "issue_prefix: decoy\n" {
+		t.Fatalf("decoy home config changed: %q", b)
 	}
 }

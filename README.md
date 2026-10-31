@@ -57,6 +57,34 @@ index. It preserves the user's checkout and Git hooks. Use `--name NAME` to pick
 a repository name, `--target BRANCH` for another integration target, and
 `--max-rats N` to change the default four concurrent rats.
 
+### Issue ID prefixes
+
+Each registered workspace keeps its own explicit `issue_prefix` in
+`.beads/config.yaml`. Without one, `br` falls back to user-level config
+(`~/.beads/config.yaml` or `~/.config/beads/config.yaml`), so tasks would get
+another project's prefix. `rk init` therefore sets it through `br config set
+issue_prefix`, for new and adopted workspaces alike:
+
+- The default is the repository name, lowercased, with each run of characters
+  outside `[a-z0-9]` replaced by one hyphen (`My_Project.v2` → `my-project-v2`).
+- `--prefix NAME` overrides it. A prefix uses lowercase letters, digits, and
+  single inner hyphens.
+- An adopted workspace that already has its own `issue_prefix` keeps it, unless
+  `--prefix` asks for a different one.
+
+For a repository registered before rk managed prefixes, or to change one:
+
+```sh
+rk config --repo NAME --prefix NAME
+```
+
+This changes only IDs created afterwards. Existing issues keep their IDs and
+stay addressable by them; nothing is renamed. `rk repos` and `rk config` report
+the effective `issue_prefix` and its `issue_prefix_source`: `workspace` when
+set in the workspace's config, or `inherited` when it comes from elsewhere and
+should be fixed with `rk config --prefix`. rk reads `.beads/config.yaml` only
+to tell whether the prefix is the workspace's own; writes go through `br`.
+
 The check is a JSON argument array, executed without shell interpolation. Set
 it to the repository's actual integration gate. If no check is configured,
 integration relies on the king's review and the worker's recorded evidence;
@@ -122,6 +150,24 @@ A target checked out in another worktree is refused. A successful integration
 closes the Beads ticket, allowing its dependents to become ready. The user's
 checkout, index, stash, and hooks are not changed.
 
+The integration comment and the run record report what integration itself
+verified, separately from the rat's report. `rk show RUN` exposes it as
+`integration_check`: `passed: ["make","check"]` when the configured check
+passed, `none configured` when the repository has no check, or `failed: ...`
+when the check failed and the run stayed ready. The comment says
+`Integration check: ["make","check"] passed.` or `Integration check: none
+configured for this repository; no repository check ran.` The rat's `--checks`
+text follows, labelled `Rat-reported checks (not verified by integration)`; it
+is never presented as integration's own result.
+
+A repository check is optional. Without one, integration still merges and
+closes the ticket, but `rk integrate` warns on stderr and the comment says
+plainly that no repository check ran. Configure one with:
+
+```sh
+rk config --repo NAME --check '["make","check"]'
+```
+
 Failed merges and checks preserve the worker's work and the candidate directory
 reported in the error. Inspect that candidate before manually removing it;
 rat-kingdom does not automatically discard conflicted candidates.
@@ -130,6 +176,24 @@ rat-kingdom does not automatically discard conflicted candidates.
 dirty or unintegrated work. `clean --discard` deliberately deletes that worker's
 local work and releases its claim; use it only when the user asked to discard
 that work. No cleanup operation deletes remote branches.
+
+A discarded task stays open and unclaimed, ready for another rat. When it
+should not be retried—abandoned, a duplicate, or won't-do—the king closes it
+without integration:
+
+```sh
+rk clean RUN --discard
+rk task --repo NAME close TASK --reason "Duplicate of TASK-2"
+```
+
+The reason is required and is recorded in a transition comment saying the king
+closed the task without integration. Closing is refused while any run of that
+task is working, ready, blocked, integrated but not cleaned, or in any state
+other than discarded or cleaned; the error names those runs, which must be
+stopped and integrated, or discarded, first. It is also refused while the task
+is claimed outside any run. Closing an already-closed task is an error and
+changes nothing. Rats cannot close tasks, and `br close` stays denied in
+managed sessions.
 
 ## Recovery and messages
 
@@ -230,11 +294,57 @@ human consent. The king must faithfully follow the user's actual instruction.
 Managed sessions receive:
 
 - A Git command wrapper that rejects pushes, notes, aliases, configuration
-  overrides, and selected execution escapes.
+  overrides, and selected execution escapes in protected repositories (see
+  below), and keeps publication closed everywhere else.
 - A session-only pre-push hook, without rewriting repository configuration.
   Other existing hooks remain available.
-- For Claude, a shell-tool hook that rejects common direct Git bypasses.
-- Role checks preventing rats from invoking publication and coordinator commands.
+- For Claude, a shell-tool hook that parses each Bash command and rejects
+  what it would execute: Git (by any path) pushing, sending or receiving
+  packs, touching notes, skipping hooks, or setting `core.hooksPath` or
+  aliases; assigning, exporting, or unsetting the managed `RK_*` and
+  `GIT_CONFIG*` variables; and naming the real Git or Beads executable. It
+  looks through pipelines, lists, subshells, command substitution, `bash -c`,
+  `eval`, and wrappers such as `env`, `sudo`, and `xargs`. The same words as
+  data (quoted arguments to other commands, heredoc bodies, comments, grep
+  patterns) are allowed. A command it cannot judge, such as one whose command
+  name is built from an expansion, is denied. It does not read script files,
+  other interpreters' code, or functions and aliases defined outside the
+  command.
+- Role checks preventing rats from invoking publication and coordinator
+  commands, including `rk task close`.
+
+### Git guard scope
+
+The Git wrapper first determines which repository a call targets by asking the
+real Git, with the call's `-C` (cumulative), `--git-dir`, `--work-tree`,
+`--bare` and `-c` options, the inherited environment (`GIT_DIR` and friends)
+and the current directory, for its common Git directory. Symlinks are resolved,
+so `/tmp` and `/private/tmp` name the same repository.
+
+- **Protected**: the common directory is that of a repository registered in the
+  session's own store, which covers its main checkout, every linked worktree,
+  and rat worktrees. The session's store is found from the run guard directory
+  (`STATE/runs/RUN/bin`) on `PATH`, not from `RK_HOME`, so changing `RK_HOME`
+  cannot unprotect it; a nested session also protects its parents' stores.
+  Only without a guard directory on `PATH` is `RK_HOME`'s store used. Protected
+  calls get the full allowlist and option checks.
+- **Unrelated**: anything else, including a directory that is not yet a
+  repository, runs the real Git unchanged. This lets `make check` create and
+  drive its disposable fixtures from inside a managed session. Even here the
+  wrapper denies `push`, `send-pack`, `receive-pack`, `http-push`, `remote-*`,
+  `notes`, `refs/notes`, `--no-verify`, `--exec*`, `--upload-pack*`, and any
+  alias (an alias such as `p = push` would expand without the guard), and it
+  turns off `help.autocorrect` so that a typo cannot become a push.
+- **Undetermined**: an unrecognized global option, a missing option value, or a
+  resolution error other than "not a git repository" is denied.
+
+The scope has limits. Only the options above and the current directory choose
+the target. Path arguments of an unrelated call are not inspected, for example
+`git init DIR`, `git clone SRC DST`, `--separate-git-dir` or `config --file`.
+The repository is resolved just before Git runs, not atomically with it.
+Commands that Git starts itself, such as hooks, `submodule foreach` or
+`rebase -x` in an unrelated repository, find the real Git on Git's exec path
+rather than the wrapper. The session pre-push hook still applies to them.
 
 These are executable operational guards, **not a hostile-code sandbox**. An
 agent with unrestricted shell access under your account can deliberately evade
@@ -251,7 +361,10 @@ The acceptance suite exercises real claims, launch failure after claiming,
 concurrent claim attempts, process stop and launcher-crash recovery, nonzero
 exit receipts, untracked-file preservation, blocked outcomes, comment retry and
 deduplication, integration conflicts, failed checks, ticket-closure retry,
-checked-out-target protection, and normal command guards.
+king closure without integration and its refusals, per-workspace issue
+prefixes against a decoy home Beads config,
+checked-out-target protection, and normal command guards, including Git
+calls in an unrelated repository from inside a managed session.
 
 The publication command's authorized argument construction is tested against a
 fake Git executable, so validation performs no actual pushes. Live model

@@ -14,10 +14,11 @@ import (
 
 const usage = `rat-kingdom — local swarms, explicit integration, no automatic pushes
 
-rk init [PATH] [--name NAME] [--target BRANCH] [--max-rats N]
+rk init [PATH] [--name NAME] [--target BRANCH] [--max-rats N] [--prefix NAME]
         [--command '["claude","{prompt}"]'] [--check '["go","test","./..."]']
-rk repos
+rk repos                               includes each workspace's issue prefix
 rk config [--repo NAME] [--command JSON] [--check JSON] [--max-rats N]
+          [--prefix NAME]               new task IDs only; existing IDs stay
 rk spawn rat|king [--repo NAME] [--task ID] [--name NAME]
 rk list [--repo NAME]                    all runs if --repo is omitted
 rk show RUN
@@ -38,6 +39,7 @@ rk reconcile                           recover observations and retry comments
 rk integrate RUN                       reviewed result -> local target -> close
 rk clean RUN [--discard]                discard requires explicit user intent
 rk task [--repo NAME] COMMAND...        curated local Beads operations
+rk task [--repo NAME] close TASK --reason TEXT   king only: close without integration
 rk publish --repo NAME --remote NAME --branch BRANCH --request TEXT
 
 All commands accept --home PATH and --json. No sync or Git-notes functionality.
@@ -75,6 +77,34 @@ func reorder(fs *flag.FlagSet, args []string) ([]string, error) {
 	}
 	return append(opts, pos...), nil
 }
+
+// closeArgs parses rk task close TASK --reason TEXT.
+func closeArgs(args []string) (id, reason string, err error) {
+	const use = "usage: rk task [--repo NAME] close TASK --reason TEXT"
+	hasReason := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+		case a == "--reason":
+			if i+1 == len(args) {
+				return "", "", errors.New(use)
+			}
+			reason, hasReason = args[i+1], true
+			i++
+		case strings.HasPrefix(a, "--reason="):
+			reason, hasReason = strings.TrimPrefix(a, "--reason="), true
+		case strings.HasPrefix(a, "-") || id != "":
+			return "", "", errors.New(use)
+		default:
+			id = a
+		}
+	}
+	if id == "" || !hasReason {
+		return "", "", errors.New(use)
+	}
+	return id, reason, nil
+}
 func emit(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -102,7 +132,7 @@ func Main(args []string, w io.Writer) error {
 	home := fs.String("home", "", "state directory")
 	repoName := fs.String("repo", "", "repository")
 	jsonOut := fs.Bool("json", false, "JSON output")
-	var name, task, target, command, check, message, summary, checks, remote, branch, request string
+	var name, task, target, command, check, prefix, message, summary, checks, remote, branch, request string
 	var max, ack int
 	var discard bool
 	var interval string
@@ -113,10 +143,12 @@ func Main(args []string, w io.Writer) error {
 		fs.StringVar(&command, "command", "", "agent argv JSON")
 		fs.StringVar(&check, "check", "", "check argv JSON")
 		fs.IntVar(&max, "max-rats", 4, "capacity")
+		fs.StringVar(&prefix, "prefix", "", "Beads issue ID prefix")
 	case "config":
 		fs.StringVar(&command, "command", "", "agent argv JSON")
 		fs.StringVar(&check, "check", "", "check argv JSON")
 		fs.IntVar(&max, "max-rats", 0, "capacity")
+		fs.StringVar(&prefix, "prefix", "", "Beads issue ID prefix")
 	case "spawn":
 		fs.StringVar(&name, "name", "", "agent name")
 		fs.StringVar(&task, "task", "", "task ID")
@@ -237,12 +269,19 @@ func Main(args []string, w io.Writer) error {
 			if len(pos) == 1 {
 				path = pos[0]
 			}
-			value, e = s.Init(path, name, target, argv, test, max)
+			value, e = s.Init(path, name, target, argv, test, max, prefix)
 		} else {
-			value, e = s.Config(*repoName, argv, test, max)
+			value, e = s.Config(*repoName, argv, test, max, prefix)
 		}
 	case "repos":
-		value, e = s.Repos()
+		var rs []Repo
+		if rs, e = s.Repos(); e == nil {
+			vs := []RepoView{}
+			for i := range rs {
+				vs = append(vs, viewRepo(&rs[i]))
+			}
+			value = vs
+		}
 	case "spawn":
 		if len(pos) != 1 {
 			return errors.New("usage: rk spawn rat|king")
@@ -301,7 +340,15 @@ func Main(args []string, w io.Writer) error {
 		case "inbox":
 			value, e = s.Inbox(id, ack)
 		case "integrate":
-			value, e = s.Integrate(id)
+			var r *Run
+			r, e = s.Integrate(id)
+			value = r
+			if r != nil && r.IntegrationCheck == noIntegrationCheck {
+				repo, re := s.Repo(r.RepoID)
+				if re == nil {
+					fmt.Fprintln(os.Stderr, "rk: warning: no repository check ran during integration; none is configured. "+configureCheckHint(repo))
+				}
+			}
 		case "clean":
 			value, e = s.Clean(id, discard)
 		case "logs":
@@ -356,7 +403,18 @@ func Main(args []string, w io.Writer) error {
 		return s.Watch(interval, w)
 	case "task":
 		if len(taskArgs) == 0 {
-			return errors.New("usage: rk task [--repo NAME] create|show|ready|list|comments|dep ...")
+			return errors.New("usage: rk task [--repo NAME] create|show|ready|list|comments|dep|close ...")
+		}
+		if taskArgs[0] == "close" {
+			if os.Getenv("RK_ROLE") == "rat" {
+				return errors.New("rats cannot close tasks; the king closes them")
+			}
+			id, reason, err := closeArgs(taskArgs[1:])
+			if err != nil {
+				return err
+			}
+			value, e = s.CloseTask(*repoName, id, reason)
+			break
 		}
 		allowed := " create show ready list comments dep blocked graph search stats "
 		if !strings.Contains(allowed, " "+taskArgs[0]+" ") {
