@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func (s *Store) Init(path, name, target string, command, check []string, max int) (*Repo, error) {
+func (s *Store) Init(path, name, target string, command, check []string, max int, prefix string) (*RepoView, error) {
 	unlock, e := s.lock()
 	if e != nil {
 		return nil, e
@@ -33,6 +33,13 @@ func (s *Store) Init(path, name, target string, command, check []string, max int
 	}
 	if !safeID(name) {
 		return nil, errors.New("invalid repository name")
+	}
+	if prefix != "" && !validPrefix(prefix) {
+		return nil, fmt.Errorf("invalid issue prefix %q: use lowercase letters, digits and single inner hyphens", prefix)
+	}
+	fallback := prefix
+	if fallback == "" {
+		fallback = defaultPrefix(name)
 	}
 	repos, e := s.Repos()
 	if e != nil {
@@ -59,11 +66,7 @@ func (s *Store) Init(path, name, target string, command, check []string, max int
 	if e = excludeLocalBeads(common); e != nil {
 		return nil, fmt.Errorf("exclude local Beads data: %w", e)
 	}
-	if _, e = os.Stat(r.BeadsDir); errors.Is(e, os.ErrNotExist) {
-		if _, e = beads(r, "king", "init"); e != nil {
-			return nil, e
-		}
-	} else if e != nil {
+	if e = initWorkspace(r, prefix, fallback); e != nil {
 		return nil, e
 	}
 	if _, e = beads(r, "king", "config", "set", "claim_exclusive", "true"); e != nil {
@@ -80,9 +83,13 @@ func (s *Store) Init(path, name, target string, command, check []string, max int
 	if e = s.saveRepo(r); e != nil {
 		return nil, e
 	}
-	return r, nil
+	v := viewRepo(r)
+	return &v, nil
 }
-func (s *Store) Config(id string, command, check []string, max int) (*Repo, error) {
+
+// Config changes rk's settings for a repository. A prefix is written to the
+// Beads workspace config; existing issues keep their IDs.
+func (s *Store) Config(id string, command, check []string, max int, prefix string) (*RepoView, error) {
 	unlock, e := s.lock()
 	if e != nil {
 		return nil, e
@@ -104,7 +111,16 @@ func (s *Store) Config(id string, command, check []string, max int) (*Repo, erro
 	if max > 0 {
 		r.MaxRats = max
 	}
-	return r, s.saveRepo(r)
+	if prefix != "" {
+		if e = setPrefix(r, prefix); e != nil {
+			return nil, e
+		}
+	}
+	if e = s.saveRepo(r); e != nil {
+		return nil, e
+	}
+	v := viewRepo(r)
+	return &v, nil
 }
 func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 	unlock, e := s.lock()
@@ -331,6 +347,7 @@ func (s *Store) Resume(id, message string) (*Run, error) {
 	r.Commit = ""
 	r.Checks = ""
 	r.IntegratedCommit = ""
+	r.IntegrationCheck = ""
 	queue(r, "Resuming existing worktree. "+message, "king")
 	if e = s.launch(repo, r); e != nil {
 		r.Process = "not_started"

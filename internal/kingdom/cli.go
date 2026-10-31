@@ -14,10 +14,11 @@ import (
 
 const usage = `rat-kingdom — local swarms, explicit integration, no automatic pushes
 
-rk init [PATH] [--name NAME] [--target BRANCH] [--max-rats N]
+rk init [PATH] [--name NAME] [--target BRANCH] [--max-rats N] [--prefix NAME]
         [--command '["claude","{prompt}"]'] [--check '["go","test","./..."]']
-rk repos
+rk repos                               includes each workspace's issue prefix
 rk config [--repo NAME] [--command JSON] [--check JSON] [--max-rats N]
+          [--prefix NAME]               new task IDs only; existing IDs stay
 rk spawn rat|king [--repo NAME] [--task ID] [--name NAME]
 rk list [--repo NAME]                    all runs if --repo is omitted
 rk show RUN
@@ -131,7 +132,7 @@ func Main(args []string, w io.Writer) error {
 	home := fs.String("home", "", "state directory")
 	repoName := fs.String("repo", "", "repository")
 	jsonOut := fs.Bool("json", false, "JSON output")
-	var name, task, target, command, check, message, summary, checks, remote, branch, request string
+	var name, task, target, command, check, prefix, message, summary, checks, remote, branch, request string
 	var max, ack int
 	var discard bool
 	var interval string
@@ -142,10 +143,12 @@ func Main(args []string, w io.Writer) error {
 		fs.StringVar(&command, "command", "", "agent argv JSON")
 		fs.StringVar(&check, "check", "", "check argv JSON")
 		fs.IntVar(&max, "max-rats", 4, "capacity")
+		fs.StringVar(&prefix, "prefix", "", "Beads issue ID prefix")
 	case "config":
 		fs.StringVar(&command, "command", "", "agent argv JSON")
 		fs.StringVar(&check, "check", "", "check argv JSON")
 		fs.IntVar(&max, "max-rats", 0, "capacity")
+		fs.StringVar(&prefix, "prefix", "", "Beads issue ID prefix")
 	case "spawn":
 		fs.StringVar(&name, "name", "", "agent name")
 		fs.StringVar(&task, "task", "", "task ID")
@@ -266,12 +269,19 @@ func Main(args []string, w io.Writer) error {
 			if len(pos) == 1 {
 				path = pos[0]
 			}
-			value, e = s.Init(path, name, target, argv, test, max)
+			value, e = s.Init(path, name, target, argv, test, max, prefix)
 		} else {
-			value, e = s.Config(*repoName, argv, test, max)
+			value, e = s.Config(*repoName, argv, test, max, prefix)
 		}
 	case "repos":
-		value, e = s.Repos()
+		var rs []Repo
+		if rs, e = s.Repos(); e == nil {
+			vs := []RepoView{}
+			for i := range rs {
+				vs = append(vs, viewRepo(&rs[i]))
+			}
+			value = vs
+		}
 	case "spawn":
 		if len(pos) != 1 {
 			return errors.New("usage: rk spawn rat|king")
@@ -330,7 +340,15 @@ func Main(args []string, w io.Writer) error {
 		case "inbox":
 			value, e = s.Inbox(id, ack)
 		case "integrate":
-			value, e = s.Integrate(id)
+			var r *Run
+			r, e = s.Integrate(id)
+			value = r
+			if r != nil && r.IntegrationCheck == noIntegrationCheck {
+				repo, re := s.Repo(r.RepoID)
+				if re == nil {
+					fmt.Fprintln(os.Stderr, "rk: warning: no repository check ran during integration; none is configured. "+configureCheckHint(repo))
+				}
+			}
 		case "clean":
 			value, e = s.Clean(id, discard)
 		case "logs":

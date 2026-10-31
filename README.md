@@ -57,6 +57,34 @@ index. It preserves the user's checkout and Git hooks. Use `--name NAME` to pick
 a repository name, `--target BRANCH` for another integration target, and
 `--max-rats N` to change the default four concurrent rats.
 
+### Issue ID prefixes
+
+Each registered workspace keeps its own explicit `issue_prefix` in
+`.beads/config.yaml`. Without one, `br` falls back to user-level config
+(`~/.beads/config.yaml` or `~/.config/beads/config.yaml`), so tasks would get
+another project's prefix. `rk init` therefore sets it through `br config set
+issue_prefix`, for new and adopted workspaces alike:
+
+- The default is the repository name, lowercased, with each run of characters
+  outside `[a-z0-9]` replaced by one hyphen (`My_Project.v2` → `my-project-v2`).
+- `--prefix NAME` overrides it. A prefix uses lowercase letters, digits, and
+  single inner hyphens.
+- An adopted workspace that already has its own `issue_prefix` keeps it, unless
+  `--prefix` asks for a different one.
+
+For a repository registered before rk managed prefixes, or to change one:
+
+```sh
+rk config --repo NAME --prefix NAME
+```
+
+This changes only IDs created afterwards. Existing issues keep their IDs and
+stay addressable by them; nothing is renamed. `rk repos` and `rk config` report
+the effective `issue_prefix` and its `issue_prefix_source`: `workspace` when
+set in the workspace's config, or `inherited` when it comes from elsewhere and
+should be fixed with `rk config --prefix`. rk reads `.beads/config.yaml` only
+to tell whether the prefix is the workspace's own; writes go through `br`.
+
 The check is a JSON argument array, executed without shell interpolation. Set
 it to the repository's actual integration gate. If no check is configured,
 integration relies on the king's review and the worker's recorded evidence;
@@ -121,6 +149,24 @@ the configured check, and advances the target with a compare-and-swap update.
 A target checked out in another worktree is refused. A successful integration
 closes the Beads ticket, allowing its dependents to become ready. The user's
 checkout, index, stash, and hooks are not changed.
+
+The integration comment and the run record report what integration itself
+verified, separately from the rat's report. `rk show RUN` exposes it as
+`integration_check`: `passed: ["make","check"]` when the configured check
+passed, `none configured` when the repository has no check, or `failed: ...`
+when the check failed and the run stayed ready. The comment says
+`Integration check: ["make","check"] passed.` or `Integration check: none
+configured for this repository; no repository check ran.` The rat's `--checks`
+text follows, labelled `Rat-reported checks (not verified by integration)`; it
+is never presented as integration's own result.
+
+A repository check is optional. Without one, integration still merges and
+closes the ticket, but `rk integrate` warns on stderr and the comment says
+plainly that no repository check ran. Configure one with:
+
+```sh
+rk config --repo NAME --check '["make","check"]'
+```
 
 Failed merges and checks preserve the worker's work and the candidate directory
 reported in the error. Inspect that candidate before manually removing it;
@@ -291,7 +337,8 @@ The acceptance suite exercises real claims, launch failure after claiming,
 concurrent claim attempts, process stop and launcher-crash recovery, nonzero
 exit receipts, untracked-file preservation, blocked outcomes, comment retry and
 deduplication, integration conflicts, failed checks, ticket-closure retry,
-king closure without integration and its refusals,
+king closure without integration and its refusals, per-workspace issue
+prefixes against a decoy home Beads config,
 checked-out-target protection, and normal command guards, including Git
 calls in an unrelated repository from inside a managed session.
 

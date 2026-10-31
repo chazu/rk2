@@ -41,8 +41,14 @@ func guardFixture(t *testing.T) (string, string, string, string) {
 	// Only the disposable store: no run guard directories from the caller's PATH.
 	t.Setenv("PATH", filepath.Dir(real))
 	t.Setenv("RK_REAL_GIT", real)
-	t.Setenv("GIT_DIR", "")
-	os.Unsetenv("GIT_DIR")
+	// Pass-through calls inherit the environment: drop a session's GIT_DIR or
+	// core.hooksPath override for this test so they act on the fixtures alone.
+	for _, v := range os.Environ() {
+		if k, _, _ := strings.Cut(v, "="); strings.HasPrefix(k, "GIT_") {
+			t.Setenv(k, "")
+			os.Unsetenv(k)
+		}
+	}
 	scratch := filepath.Join(tmp, "scratch")
 	if e = os.Mkdir(scratch, 0700); e != nil {
 		t.Fatal(e)

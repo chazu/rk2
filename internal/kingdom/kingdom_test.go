@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,17 +13,6 @@ import (
 	"time"
 )
 
-// TestMain drops a managed session's identity and Git settings, as the
-// acceptance suite does, so tests behave the same inside rat and king sessions.
-func TestMain(m *testing.M) {
-	for _, v := range os.Environ() {
-		k, _, _ := strings.Cut(v, "=")
-		if strings.HasPrefix(k, "RK_") || strings.HasPrefix(k, "GIT_") || strings.HasPrefix(k, "BEADS_") || strings.HasPrefix(k, "BD_") || strings.HasPrefix(k, "BR_") {
-			os.Unsetenv(k)
-		}
-	}
-	os.Exit(m.Run())
-}
 func TestGitGuard(t *testing.T) {
 	denied := [][]string{{"push"}, {"-C", "/tmp/repo", "push", "--no-verify"}, {"notes", "add"}, {"p"}, {"-c", "alias.p=push", "p"}, {"--config-env=core.hooksPath=ESCAPE", "commit"}, {"--exec-path=/tmp", "status"}, {"show", "refs/notes/commits"}, {"fetch", "--upload-pack=evil"}, {"rebase", "--exec", "git push"}, {"commit", "--no-verify"}}
 	for _, args := range denied {
@@ -175,7 +165,7 @@ func TestRunPathDropsOtherRunsGuards(t *testing.T) {
 	}
 }
 func TestPublishRequiresRequestBeforeGit(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s, _ := Open(hermetic(t))
 	if e := s.Publish("missing", "origin", "main", ""); e == nil || !strings.Contains(e.Error(), "request") {
 		t.Fatal(e)
 	}
@@ -199,7 +189,7 @@ func TestAtomicFileModes(t *testing.T) {
 }
 
 func TestPublicationPinsOneRefAndDoesNotActuallyPush(t *testing.T) {
-	s, _ := Open(t.TempDir())
+	s, _ := Open(hermetic(t))
 	repo := &Repo{ID: "example", Name: "example", Path: t.TempDir()}
 	if e := s.saveRepo(repo); e != nil {
 		t.Fatal(e)
@@ -299,7 +289,7 @@ func TestLocalBeadsExclusionCreatesMissingInfoDirectory(t *testing.T) {
 	}
 }
 func TestOneKingSystemWide(t *testing.T) {
-	home := t.TempDir()
+	home := hermetic(t)
 	s, _ := Open(home)
 	if _, e := s.King(); e == nil || !strings.Contains(e.Error(), "rk spawn king") {
 		t.Fatalf("expected spawn hint, got %v", e)
@@ -383,5 +373,178 @@ func TestTaskCloseArgumentsAndRole(t *testing.T) {
 	t.Setenv("RK_RUN", "")
 	if e = Main([]string{"task", "--home", home, "close", "bd-1"}, io.Discard); e == nil || !strings.Contains(e.Error(), "usage") {
 		t.Fatal(e)
+	}
+}
+
+func TestIntegrationReportSeparatesOwnCheckFromRatReport(t *testing.T) {
+	repo := &Repo{Name: "demo"}
+	ratClaim := "NOT RUN: make check acceptance stage"
+	r := &Run{Target: "rk/integration", IntegratedCommit: "abc123", Checks: ratClaim,
+		IntegrationCheck: "passed: " + checkLabel([]string{"make", "check"})}
+	got := integrationReport(repo, r)
+	for _, want := range []string{"Integration check: [\"make\",\"check\"] passed.", "Rat-reported checks (not verified by integration): " + ratClaim} {
+		if !strings.Contains(got, want) {
+			t.Errorf("configured report %q lacks %q", got, want)
+		}
+	}
+	r.IntegrationCheck = noIntegrationCheck
+	got = integrationReport(repo, r)
+	for _, want := range []string{"Integration check: none configured for this repository; no repository check ran.", "rk config --repo demo --check JSON", "Rat-reported checks (not verified by integration): " + ratClaim} {
+		if !strings.Contains(got, want) {
+			t.Errorf("unconfigured report %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "passed") || strings.Index(got, ratClaim) < strings.Index(got, "Rat-reported checks") {
+		t.Errorf("rat's checks presented as the integration result: %q", got)
+	}
+	r.Checks = ""
+	if got = integrationReport(repo, r); strings.Contains(got, "Rat-reported") {
+		t.Errorf("empty rat report still labelled: %q", got)
+	}
+}
+func TestIssuePrefixRules(t *testing.T) {
+	for name, want := range map[string]string{"rk2": "rk2", "My_Project.v2": "my-project-v2", "--Odd  Name--": "odd-name", "___": ""} {
+		if got := defaultPrefix(name); got != want {
+			t.Errorf("defaultPrefix(%q) = %q, want %q", name, got, want)
+		}
+	}
+	for p, want := range map[string]bool{"rk2": true, "my-proj": true, "": false, "-a": false, "a-": false, "a--b": false, "Bad": false, "a_b": false} {
+		if validPrefix(p) != want {
+			t.Errorf("validPrefix(%q) != %v", p, want)
+		}
+	}
+	dir := t.TempDir()
+	repo := &Repo{BeadsDir: dir}
+	for text, want := range map[string]string{
+		"# Beads Project Configuration\n# issue_prefix: repo\n": "",
+		"claim_exclusive: true\nissue_prefix: mine\n":           "mine",
+		"issue_prefix: \"quoted\" # note\n":                     "quoted",
+		"nested:\n  issue_prefix: deep\n":                       "",
+	} {
+		if e := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(text), 0o644); e != nil {
+			t.Fatal(e)
+		}
+		if got, e := workspacePrefix(repo); e != nil || got != want {
+			t.Errorf("workspacePrefix(%q) = %q, %v; want %q", text, got, e, want)
+		}
+	}
+}
+
+// Real br against disposable workspaces whose user config is a decoy home
+// inside the test directory, never the real one.
+func TestWorkspacesGetOwnIssuePrefix(t *testing.T) {
+	if _, e := exec.LookPath(beadsExecutable()); e != nil {
+		t.Skip("br not installed")
+	}
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	decoy := filepath.Join(home, ".beads", "config.yaml")
+	if e := os.MkdirAll(filepath.Dir(decoy), 0o755); e != nil {
+		t.Fatal(e)
+	}
+	if e := os.WriteFile(decoy, []byte("issue_prefix: decoy\n"), 0o644); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	workspace := func(name string) *Repo {
+		dir := filepath.Join(home, name)
+		if e := os.MkdirAll(dir, 0o755); e != nil {
+			t.Fatal(e)
+		}
+		return &Repo{ID: name, Name: name, Path: dir, BeadsDir: filepath.Join(dir, ".beads"), Target: "rk/integration", Command: []string{"true"}, MaxRats: 1}
+	}
+	create := func(r *Repo, title string) string {
+		b, e := beads(r, "king", "create", title)
+		if e != nil {
+			t.Fatal(e)
+		}
+		var v struct {
+			ID string `json:"id"`
+		}
+		if e = json.Unmarshal(b, &v); e != nil {
+			t.Fatal(e)
+		}
+		return v.ID
+	}
+	expect := func(r *Repo, prefix string, ids ...string) {
+		t.Helper()
+		if v := viewRepo(r); v.IssuePrefix != prefix || v.IssuePrefixSource != "workspace" {
+			t.Fatalf("%s: prefix %q from %q, want %q from workspace", r.Name, v.IssuePrefix, v.IssuePrefixSource, prefix)
+		}
+		if id := create(r, "new"); !strings.HasPrefix(id, prefix+"-") {
+			t.Fatalf("%s: new task %s lacks prefix %s", r.Name, id, prefix)
+		}
+		for _, id := range ids {
+			if task, e := getTask(r, id); e != nil || task.ID != id {
+				t.Fatalf("%s: existing task %s not kept: %v", r.Name, id, e)
+			}
+		}
+	}
+
+	fresh := workspace("fresh")
+	if e := initWorkspace(fresh, "", "fresh"); e != nil {
+		t.Fatal(e)
+	}
+	expect(fresh, "fresh")
+	override := workspace("override")
+	if e := initWorkspace(override, "ovr", "ovr"); e != nil {
+		t.Fatal(e)
+	}
+	expect(override, "ovr")
+
+	adopted := workspace("adopted")
+	if _, e := beads(adopted, "king", "init"); e != nil {
+		t.Fatal(e)
+	}
+	leaked := create(adopted, "before rk")
+	if !strings.HasPrefix(leaked, "decoy-") {
+		t.Fatalf("fixture did not reproduce the leak: %s", leaked)
+	}
+	if e := initWorkspace(adopted, "", "adopted"); e != nil {
+		t.Fatal(e)
+	}
+	expect(adopted, "adopted", leaked)
+	keeper := workspace("keeper")
+	if _, e := beads(keeper, "king", "init"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := beads(keeper, "king", "config", "set", "issue_prefix", "keep"); e != nil {
+		t.Fatal(e)
+	}
+	if e := initWorkspace(keeper, "", "keeper"); e != nil {
+		t.Fatal(e)
+	}
+	expect(keeper, "keep")
+
+	// A workspace registered before rk managed prefixes, fixed with rk config.
+	s, _ := Open(filepath.Join(root, "state"))
+	if e := s.saveRepo(adopted); e != nil {
+		t.Fatal(e)
+	}
+	config := filepath.Join(adopted.BeadsDir, "config.yaml")
+	b, _ := os.ReadFile(config)
+	kept := []string{}
+	for _, l := range strings.SplitAfter(string(b), "\n") {
+		if !strings.HasPrefix(l, "issue_prefix:") {
+			kept = append(kept, l)
+		}
+	}
+	if e := os.WriteFile(config, []byte(strings.Join(kept, "")), 0o644); e != nil {
+		t.Fatal(e)
+	}
+	if v := viewRepo(adopted); v.IssuePrefix != "decoy" || !strings.HasPrefix(v.IssuePrefixSource, "inherited") {
+		t.Fatalf("inherited prefix not reported: %+v", v)
+	}
+	older := create(adopted, "still inherited")
+	if _, e := s.Config("adopted", nil, nil, 0, "Bad_X"); e == nil {
+		t.Fatal("accepted invalid prefix")
+	}
+	if v, e := s.Config("adopted", nil, nil, 0, "adopted2"); e != nil || v.IssuePrefix != "adopted2" {
+		t.Fatalf("config prefix: %+v %v", v, e)
+	}
+	expect(adopted, "adopted2", leaked, older)
+	if b, _ := os.ReadFile(decoy); string(b) != "issue_prefix: decoy\n" {
+		t.Fatalf("decoy home config changed: %q", b)
 	}
 }

@@ -54,7 +54,7 @@ def wait_exit(run):
 def stopped(run):
     rk('stop', run['id'])
 
-def fixture(name):
+def fixture(name, check='["/bin/sh","-c","test -f base.txt"]'):
     repo = root / name
     repo.mkdir()
     git(repo, 'init', '-b', 'main')
@@ -69,7 +69,7 @@ def fixture(name):
     previous_exclude = exclude.read_text() + '\n# User exclusions\n/user-local/'
     exclude.write_text(previous_exclude)
     rk('init', str(repo), '--name', name, '--command', '["/bin/sh","-c","exit 0"]',
-       '--check', '["/bin/sh","-c","test -f base.txt"]')
+       *(('--check', check) if check else ()))
     assert (repo / '.gitignore').read_text() == '*.local\n'
     assert exclude.read_text().startswith(previous_exclude + '\n')
     assert exclude.read_text().splitlines().count('/.beads/') == 1
@@ -114,6 +114,13 @@ try:
     stopped(run)
     result = data('integrate', run['id'])
     assert result['state'] == 'integrated' and result['closed']
+    assert result['integration_check'] == 'passed: ["/bin/sh","-c","test -f base.txt"]'
+    assert runstate(run)['integration_check'] == result['integration_check']
+    report = [c['text'] for c in data('task', '--repo', 'demo', 'comments', 'list', issue)
+              if c['text'].startswith('Integrated locally')]
+    assert len(report) == 1, report
+    assert 'Integration check: ["/bin/sh","-c","test -f base.txt"] passed.' in report[0]
+    assert report[0].endswith('Rat-reported checks (not verified by integration): file verified')
     assert data('task', '--repo', 'demo', 'ready', '--json') is not None
     assert git(repo, 'rev-parse', 'main') == main_before
     assert git(repo, 'branch', '--show-current') == 'main'
@@ -355,6 +362,31 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert git(other, 'status', '--porcelain') == ''
     print('PASS checked-out integration target is protected')
 
+    # Without a configured check, integration still works but says plainly
+    # that no repository check ran; the rat's claim is labelled as its own.
+    fixture('nocheck', check=None)
+    issue = task('nocheck', 'unchecked integration')
+    run = data('spawn', 'rat', '--repo', 'nocheck', '--task', issue)
+    wait_exit(run); stopped(run)
+    wt = Path(run['worktree'])
+    (wt / 'unchecked.txt').write_text('unchecked\n')
+    git(wt, 'add', 'unchecked.txt')
+    git(wt, 'commit', '-m', 'unchecked work')
+    rk('finish', run['id'], '--summary', 'done', '--checks', 'make check passed')
+    p = rk('integrate', run['id'])
+    result = json.loads(p.stdout)
+    assert result['state'] == 'integrated' and result['integration_check'] == 'none configured'
+    assert 'no repository check ran' in p.stderr and 'rk config --repo nocheck --check JSON' in p.stderr
+    assert runstate(run)['integration_check'] == 'none configured'
+    report = [c['text'] for c in data('task', '--repo', 'nocheck', 'comments', 'list', issue)
+              if c['text'].startswith('Integrated locally')]
+    assert len(report) == 1, report
+    assert 'Integration check: none configured for this repository; no repository check ran.' in report[0]
+    assert 'rk config --repo nocheck --check JSON' in report[0]
+    assert 'passed' not in report[0].split('Rat-reported checks (not verified by integration): ')[0]
+    assert report[0].endswith('Rat-reported checks (not verified by integration): make check passed')
+    print('PASS integration reports its own check, or that none ran, apart from the rat\'s claim')
+
     # Scripted agents record every line typed into their terminal.
     echo = root / 'echo-agent.py'
     echo.write_text('import os, sys\n'
@@ -402,6 +434,80 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert fresh['id'] != king['id'] and data('show', 'king')['id'] == fresh['id']
     data('dismiss', 'king')
     print('PASS king restart, dismissal and fresh spawn')
+    # A workspace without its own issue_prefix inherits the user's
+    # ~/.beads/config.yaml. The decoy home lives inside this temp root.
+    home = root / 'home'
+    (home / '.beads').mkdir(parents=True)
+    (home / '.beads/config.yaml').write_text('issue_prefix: decoy\n')
+    decoy = {'HOME': str(home), 'XDG_CONFIG_HOME': str(home / '.config')}
+    def hdata(*args):
+        return json.loads(rk(*args, extra=decoy).stdout)
+    def plain_repo(name):
+        repo = home / name
+        repo.mkdir()
+        git(repo, 'init', '-b', 'main')
+        git(repo, 'config', 'user.name', 'Acceptance')
+        git(repo, 'config', 'user.email', 'acceptance@example.invalid')
+        git(repo, 'config', 'commit.gpgsign', 'false')
+        (repo / 'base.txt').write_text('base\n')
+        git(repo, 'add', 'base.txt')
+        git(repo, 'commit', '-m', 'initial')
+        return repo
+    def br_here(repo, *args):
+        return command(['br', *args, '--no-auto-flush', '--no-auto-import'], cwd=repo,
+                       extra={**decoy, 'BEADS_DIR': str(repo / '.beads')}).stdout
+    def prefix_of(name):
+        view = next(r for r in hdata('repos') if r['name'] == name)
+        return view['issue_prefix'], view['issue_prefix_source']
+    def htask(name, title):
+        return hdata('task', '--repo', name, 'create', title)['id']
+    def hshow(name, issue):
+        return hdata('task', '--repo', name, 'show', issue)[0]['id']
+    no_agent = ('--command', '["/bin/sh","-c","exit 0"]')
+
+    rk('init', str(plain_repo('Prefix_Demo')), *no_agent, extra=decoy)
+    assert prefix_of('Prefix_Demo') == ('prefix-demo', 'workspace')
+    assert htask('Prefix_Demo', 'own prefix').startswith('prefix-demo-')
+    rk('init', str(plain_repo('override')), *no_agent, '--prefix', 'ovr', extra=decoy)
+    assert prefix_of('override') == ('ovr', 'workspace')
+    assert htask('override', 'override prefix').startswith('ovr-')
+    assert rk('init', str(plain_repo('badprefix')), *no_agent, '--prefix', 'Bad_X',
+              ok=False, extra=decoy).returncode
+    print('PASS new workspaces get their own issue prefix despite a decoy home config')
+
+    adopted = plain_repo('adopted')
+    br_here(adopted, 'init')
+    leaked = json.loads(br_here(adopted, 'create', 'before rk', '--json'))['id']
+    assert leaked.startswith('decoy-'), leaked
+    rk('init', str(adopted), *no_agent, extra=decoy)
+    assert prefix_of('adopted') == ('adopted', 'workspace')
+    assert htask('adopted', 'after rk').startswith('adopted-')
+    assert hshow('adopted', leaked) == leaked
+    keeper = plain_repo('keeper')
+    br_here(keeper, 'init')
+    br_here(keeper, 'config', 'set', 'issue_prefix', 'keep')
+    rk('init', str(keeper), *no_agent, extra=decoy)
+    assert prefix_of('keeper') == ('keep', 'workspace')
+    assert htask('keeper', 'kept').startswith('keep-')
+    print('PASS adopting a workspace sets a missing prefix and keeps an explicit one')
+
+    # Simulate a workspace registered before rk managed prefixes.
+    config = adopted / '.beads/config.yaml'
+    config.write_text(''.join(l for l in config.read_text().splitlines(True)
+                              if not l.startswith('issue_prefix:')))
+    prefix, source = prefix_of('adopted')
+    assert prefix == 'decoy' and source.startswith('inherited'), (prefix, source)
+    older = htask('adopted', 'still inherited')
+    assert older.startswith('decoy-')
+    assert rk('config', '--repo', 'adopted', '--prefix', 'Bad_X', ok=False, extra=decoy).returncode
+    view = hdata('config', '--repo', 'adopted', '--prefix', 'adopted2')
+    assert (view['issue_prefix'], view['issue_prefix_source']) == ('adopted2', 'workspace')
+    assert htask('adopted', 'renamed prefix').startswith('adopted2-')
+    for issue in (leaked, older):
+        assert hshow('adopted', issue) == issue
+    assert hdata('config', '--repo', 'keeper', '--max-rats', '2')['issue_prefix'] == 'keep'
+    assert (home / '.beads/config.yaml').read_text() == 'issue_prefix: decoy\n'
+    print('PASS rk config sets a registered workspace prefix without renaming issues')
     print(f'Acceptance artifacts: {root}')
 finally:
     # Isolated server only: TMUX_TMPDIR points inside this test directory.
