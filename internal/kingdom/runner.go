@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -413,7 +412,8 @@ func (s *Store) Logs(id string, w io.Writer) error {
 	return e
 }
 
-// CheckShell is an additional provider hook, not a shell parser or a security sandbox.
+// CheckShell is the Claude Bash hook: an operational guard that judges what a
+// command would execute (see shell.go), not a security sandbox.
 func CheckShell(reader io.Reader) error {
 	var v struct {
 		ToolInput struct {
@@ -423,11 +423,5 @@ func CheckShell(reader io.Reader) error {
 	if e := json.NewDecoder(reader).Decode(&v); e != nil {
 		return e
 	}
-	text := strings.ToLower(v.ToolInput.Command)
-	for _, bad := range []string{"git push", "/git push", "send-pack", "receive-pack", "refs/notes", "git notes", "--no-verify", "core.hookspath", "git_config", "rk_real_git", "rk_role=", "unset rk_"} {
-		if strings.Contains(text, bad) {
-			return fmt.Errorf("managed command denied (%s); use the king's explicit rk publish path", strconv.Quote(bad))
-		}
-	}
-	return nil
+	return checkShellCommand(v.ToolInput.Command)
 }
