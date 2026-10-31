@@ -20,6 +20,13 @@ env = {k: v for k, v in os.environ.items()
 env.update(RK_HOME=str(root / 'state'), TMUX_TMPDIR=str(root), RUST_LOG='error',
            RK_NUDGE_INTERVAL='300ms')
 
+# The br that rk itself runs, for fault wrappers and for driving a workspace
+# as the user would: skip run guard directories (ROOT/runs/ID/bin), as rk does
+# when the suite runs inside a managed session.
+realbr = shutil.which('br', path=os.pathsep.join(
+    d for d in env['PATH'].split(os.pathsep)
+    if not (Path(d).name == 'bin' and Path(d).parent.parent.name == 'runs')))
+
 def command(args, cwd=None, ok=True, extra=None):
     p = subprocess.run(args, cwd=cwd, env={**env, **(extra or {})},
                        capture_output=True, text=True, timeout=40)
@@ -38,6 +45,12 @@ def git(repo, *args):
 
 def task(repo, title):
     return data('task', '--repo', repo, 'create', title)['id']
+
+def integration_reports(repo, issue):
+    # Delivered comments carry an "[rk:MESSAGE_ID] " deduplication marker.
+    texts = [c['text'].split('] ', 1)[1] if c['text'].startswith('[rk:') else c['text']
+             for c in data('task', '--repo', repo, 'comments', 'list', issue)]
+    return [t for t in texts if t.startswith('Integrated locally')]
 
 def runstate(run):
     return data('show', run['id'])
@@ -116,8 +129,7 @@ try:
     assert result['state'] == 'integrated' and result['closed']
     assert result['integration_check'] == 'passed: ["/bin/sh","-c","test -f base.txt"]'
     assert runstate(run)['integration_check'] == result['integration_check']
-    report = [c['text'] for c in data('task', '--repo', 'demo', 'comments', 'list', issue)
-              if c['text'].startswith('Integrated locally')]
+    report = integration_reports('demo', issue)
     assert len(report) == 1, report
     assert 'Integration check: ["/bin/sh","-c","test -f base.txt"] passed.' in report[0]
     assert report[0].endswith('Rat-reported checks (not verified by integration): file verified')
@@ -315,11 +327,6 @@ printf 'guards-passed\\n' > guard-evidence.txt
     print('PASS four concurrent rk claim attempts produce one winner')
 
     # Delivery failure saves the result, then retries without duplicate comments.
-    # Wrap the br that rk itself would run: skip run guard directories
-    # (ROOT/runs/ID/bin), as rk does when the suite runs in a managed session.
-    realbr = shutil.which('br', path=os.pathsep.join(
-        d for d in env['PATH'].split(os.pathsep)
-        if not (Path(d).name == 'bin' and Path(d).parent.parent.name == 'runs')))
     fault = root / 'fault-br.sh'
     fault.write_text('#!/bin/sh\nif [ "$1" = comments ]; then exit 77; fi\nexec ' + realbr + ' "$@"\n')
     fault.chmod(0o700)
@@ -378,8 +385,7 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert result['state'] == 'integrated' and result['integration_check'] == 'none configured'
     assert 'no repository check ran' in p.stderr and 'rk config --repo nocheck --check JSON' in p.stderr
     assert runstate(run)['integration_check'] == 'none configured'
-    report = [c['text'] for c in data('task', '--repo', 'nocheck', 'comments', 'list', issue)
-              if c['text'].startswith('Integrated locally')]
+    report = integration_reports('nocheck', issue)
     assert len(report) == 1, report
     assert 'Integration check: none configured for this repository; no repository check ran.' in report[0]
     assert 'rk config --repo nocheck --check JSON' in report[0]
@@ -454,7 +460,7 @@ printf 'guards-passed\\n' > guard-evidence.txt
         git(repo, 'commit', '-m', 'initial')
         return repo
     def br_here(repo, *args):
-        return command(['br', *args, '--no-auto-flush', '--no-auto-import'], cwd=repo,
+        return command([realbr, *args, '--no-auto-flush', '--no-auto-import'], cwd=repo,
                        extra={**decoy, 'BEADS_DIR': str(repo / '.beads')}).stdout
     def prefix_of(name):
         view = next(r for r in hdata('repos') if r['name'] == name)
