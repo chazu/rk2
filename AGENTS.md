@@ -12,6 +12,8 @@ Read DESIGN.md and README.md before changing lifecycle behavior.
 - Run `make check` before claiming implementation is ready. It needs git, tmux,
   br, and python3, and runs only disposable local acceptance fixtures.
 - Do not test against live agent sessions or publish real refs for acceptance tests.
-- Git is not wrapped in managed sessions. Pushes are refused by the session-only
-  pre-push hook and the Claude Bash hook; `br` and role checks remain. Keep these
-  guards' limitations explicit. They are not a sandbox.
+- Neither Git nor `br` is wrapped in managed sessions. Pushes are refused by the
+  session-only pre-push hook and the Claude Bash hook; rk role checks remain.
+  Agents are instructed, not forced, to claim and close tasks through rk
+  lifecycle commands. Keep these guards' limitations explicit. They are not a
+  sandbox.

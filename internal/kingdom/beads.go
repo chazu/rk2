@@ -26,7 +26,7 @@ type Comment struct {
 	Text   string `json:"text"`
 }
 
-func beadsExecutable() string { return realExecutable("RK_REAL_BR", "br") }
+func beadsExecutable() string { return realExecutable("br") }
 func beads(repo *Repo, actor string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -170,37 +170,6 @@ func queue(r *Run, text string, author ...string) {
 	if r.Task != "" {
 		r.Messages = append(r.Messages, Message{Author: actor, ID: newID(), Task: r.Task, Text: text, Created: time.Now().UTC()})
 	}
-}
-func GuardedBeads(args []string) error {
-	if len(args) == 0 {
-		return errors.New("Beads subcommand required")
-	}
-	allowed := " ready show list blocked dep graph search stats comments create "
-	if !strings.Contains(allowed, " "+args[0]+" ") {
-		return fmt.Errorf("br %s denied in managed session; use rk lifecycle commands", args[0])
-	}
-	if args[0] == "dep" && (len(args) < 2 || (args[1] != "list" && args[1] != "tree")) {
-		return errors.New("worker dependency changes require the king")
-	}
-	for _, a := range args {
-		if strings.HasPrefix(a, "--db") || strings.HasPrefix(a, "--actor") || strings.HasPrefix(a, "--status") || strings.HasPrefix(a, "--assignee") || a == "--force" {
-			return fmt.Errorf("Beads option %q denied", a)
-		}
-	}
-	p := os.Getenv("RK_REAL_BR")
-	if p == "" {
-		return errors.New("missing managed Beads executable")
-	}
-	if isGuard(p) {
-		return errors.New("managed Beads executable is the rk guard itself; restart the run")
-	}
-	args = append(args, "--no-auto-import", "--no-auto-flush", "--actor", os.Getenv("RK_RUN"))
-	cmd := exec.Command(p, args...)
-	cmd.Env = os.Environ()
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 // Beads resolves issue_prefix from the workspace's .beads/config.yaml, then

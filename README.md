@@ -192,8 +192,8 @@ task is working, ready, blocked, integrated but not cleaned, or in any state
 other than discarded or cleaned; the error names those runs, which must be
 stopped and integrated, or discarded, first. It is also refused while the task
 is claimed outside any run. Closing an already-closed task is an error and
-changes nothing. Rats cannot close tasks, and `br close` stays denied in
-managed sessions.
+changes nothing. Rats cannot use `rk task close`; direct `br close` is not
+intercepted, and agents are instructed to use the rk lifecycle instead.
 
 ## Recovery and messages
 
@@ -301,7 +301,7 @@ Managed sessions receive:
   what it would execute: Git (by any path) pushing, sending or receiving
   packs, touching notes, skipping hooks, or setting `core.hooksPath` or
   aliases; assigning, exporting, or unsetting the managed `RK_*` and
-  `GIT_CONFIG*` variables; and naming the real Beads executable. It
+  `GIT_CONFIG*` variables. It
   looks through pipelines, lists, subshells, command substitution, `bash -c`,
   `eval`, and wrappers such as `env`, `sudo`, and `xargs`. The same words as
   data (quoted arguments to other commands, heredoc bodies, comments, grep
@@ -309,14 +309,16 @@ Managed sessions receive:
   name is built from an expansion, is denied. It does not read script files,
   other interpreters' code, or functions and aliases defined outside the
   command.
-- A `br` wrapper on `PATH` that allows only reading tasks and dependencies,
-  comments, and task creation, and records the run as the actor.
 - Role checks preventing rats from invoking publication and coordinator
   commands, including `rk task close`.
 
-Git itself is **not wrapped**. The run's guard directory (`STATE/runs/RUN/bin`)
-on `PATH` holds `rk` and `br` only, so `git` is whatever Git the user's `PATH`
-finds, and it behaves normally in a session: `git init`, `git worktree`,
+Neither Git nor Beads is **wrapped**. The run's bin directory
+(`STATE/runs/RUN/bin`) on `PATH` holds only `rk`, so `git` and `br` are
+whatever the user's `PATH` finds. Agents can run `br` directly, including
+`br close` and `br update`; claiming and closing through rk lifecycle commands
+is an instruction, not something rk enforces, and the rk role checks still
+refuse rats coordinator commands. Run directories made by an older rk may still
+link `git` and `br` to rk; rk then forwards to the real tool. Git behaves normally in a session: `git init`, `git worktree`,
 aliases, and `go build`'s VCS stamping all work, in registered repositories and
 elsewhere. rk's own Git calls use the same Git, with Git, Beads and role
 variables removed from their environment. Pushes stay closed by the pre-push
@@ -329,7 +331,7 @@ unrestricted shell access under your account can deliberately evade them: for
 example `git push --no-verify` or `git -c core.hooksPath=...` skips the
 session pre-push hook, and is refused only by the Claude shell-tool hook, which
 does not read scripts or other interpreters' code. An agent can also unset the
-session environment, use a different network client, or call the real `br`.
+session environment, use a different network client, or change tasks with `br`.
 Alternative providers do not automatically receive the Claude tool hook. Do not
 treat the guards as a security boundary against malicious code; that would
 require OS/container isolation and a separate credential/network policy.

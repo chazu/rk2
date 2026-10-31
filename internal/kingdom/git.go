@@ -29,14 +29,10 @@ func cleanEnv(extra map[string]string) []string {
 	return env
 }
 
-// realExecutable finds the real binary behind the br guard. A run launched from a
-// managed session inherits that session's guard directory on PATH (tmux copies
-// the client's PATH), and a guard that resolves to itself execs itself forever.
-// Other runs' guard directories are skipped too: they may hold a different rk.
-func realExecutable(env, name string) string {
-	if p := os.Getenv(env); p != "" && !isGuard(p) {
-		return p
-	}
+// realExecutable finds name on PATH, skipping run bin directories and rk
+// itself. Sessions started by an older rk still have git and br linked to rk
+// in their run bin directory, and resolving to rk would exec itself forever.
+func realExecutable(name string) string {
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if dir == "" || guardDir(dir) {
 			continue
@@ -65,7 +61,7 @@ func isGuard(p string) bool {
 func gitOutput(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd := exec.CommandContext(ctx, gitExecutable(), append([]string{"-C", dir}, args...)...)
 	cmd.Env = cleanEnv(nil)
 	var out, errout bytes.Buffer
 	cmd.Stdout = &out
@@ -160,15 +156,33 @@ func shellCommand(args []string) string {
 	return strings.Join(q, " ")
 }
 
-// guardDir recognizes a run's guard directory, ROOT/runs/ID/bin.
+// guardDir recognizes a run's bin directory, ROOT/runs/ID/bin.
 func guardDir(dir string) bool {
 	dir = filepath.Clean(dir)
-	runs := filepath.Dir(filepath.Dir(dir))
-	if filepath.Base(dir) != "bin" || filepath.Base(runs) != "runs" {
-		return false
+	return filepath.Base(dir) == "bin" && filepath.Base(filepath.Dir(filepath.Dir(dir))) == "runs"
+}
+
+func gitExecutable() string {
+	if p := realExecutable("git"); p != "" {
+		return p
 	}
-	_, e := os.Lstat(filepath.Join(dir, "br"))
-	return e == nil
+	return "git"
+}
+
+// Forward runs the real git or br for a stale link left by an older rk.
+func Forward(name string, args []string) error {
+	p := realExecutable(name)
+	if p == "" {
+		return fmt.Errorf("%s not found on PATH", name)
+	}
+	cmd := exec.Command(p, args...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	e := cmd.Run()
+	var exit *exec.ExitError
+	if errors.As(e, &exit) {
+		os.Exit(exit.ExitCode())
+	}
+	return e
 }
 func hooks(s *Store, r *Run, repo *Repo, exe string) (string, error) {
 	dest := filepath.Join(s.runDir(r.ID), "hooks")

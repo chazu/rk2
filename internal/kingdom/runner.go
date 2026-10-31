@@ -87,7 +87,7 @@ func (s *Store) prepare(repo *Repo, r *Run, exe string) error {
 	if e := os.MkdirAll(bin, 0700); e != nil {
 		return e
 	}
-	for _, name := range []string{"rk", "br"} {
+	for _, name := range []string{"rk"} {
 		p := filepath.Join(bin, name)
 		os.Remove(p)
 		if e := os.Symlink(exe, p); e != nil {
@@ -161,7 +161,6 @@ Previous handoff / continuation: %s
 func (s *Store) runEnv(repo *Repo, r *Run) []string {
 	env := map[string]string{
 		"RK_HOME": s.Root, "RK_RUN": r.ID, "RK_ROLE": r.Role,
-		"RK_REAL_BR":       beadsExecutable(),
 		"PATH":             s.runPath(r),
 		"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath", "GIT_CONFIG_VALUE_0": filepath.Join(s.runDir(r.ID), "hooks"),
 		"BR_AGENT_NAME": r.Name, "BR_SESSION": r.ID, "BR_HARNESS": "rat-kingdom", "RUST_LOG": "error",

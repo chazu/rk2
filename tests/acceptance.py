@@ -205,12 +205,14 @@ try:
     probe = root / 'guard-probe.sh'
     probe.write_text('''#!/bin/sh
 set -eu
-# rk provides rk and br on PATH, but no git: Git itself is not wrapped.
+# rk provides only rk on PATH: neither Git nor Beads is wrapped.
 bin="$RK_HOME/runs/$RK_RUN/bin"
-test -x "$bin/rk"; test -x "$bin/br"
+test -x "$bin/rk"
 if [ -e "$bin/git" ] || [ -L "$bin/git" ]; then exit 30; fi
-if [ -n "${RK_REAL_GIT+set}" ]; then exit 29; fi
+if [ -e "$bin/br" ] || [ -L "$bin/br" ]; then exit 25; fi
+if [ -n "${RK_REAL_GIT+set}" ] || [ -n "${RK_REAL_BR+set}" ]; then exit 29; fi
 case "$(command -v git)" in */runs/*/bin/git) exit 28 ;; esac
+case "$(command -v br)" in */runs/*/bin/br) exit 26 ;; esac
 case "$(git --version)" in 'git version '*) ;; *) exit 27 ;; esac
 if rk publish --remote origin --branch main --request invented; then exit 35; fi
 git status --porcelain
@@ -333,11 +335,15 @@ printf 'guards-passed\\n' > guard-evidence.txt
     print('PASS four concurrent rk claim attempts produce one winner')
 
     # Delivery failure saves the result, then retries without duplicate comments.
-    fault = root / 'fault-br.sh'
+    # A failing br first on PATH; rk runs the first br that is not a run bin.
+    faultdir = root / 'fault-bin'
+    faultdir.mkdir()
+    fault = faultdir / 'br'
+    faultpath = {'PATH': str(faultdir) + os.pathsep + env['PATH']}
     fault.write_text('#!/bin/sh\nif [ "$1" = comments ]; then exit 77; fi\nexec ' + realbr + ' "$@"\n')
     fault.chmod(0o700)
     assert rk('finish', winning['id'], '--summary', 'delivery probe', '--checks', 'no changes required',
-              ok=False, extra={'RK_REAL_BR': str(fault)}).returncode
+              ok=False, extra=faultpath).returncode
     saved = runstate(winning)
     assert saved['state'] == 'ready' and any(not m['delivered'] for m in saved['messages'])
     rk('reconcile'); rk('reconcile')
@@ -355,7 +361,7 @@ printf 'guards-passed\\n' > guard-evidence.txt
     assert Path(winning['worktree']).exists()
     rk('config', '--repo', 'demo', '--check', '["/bin/sh","-c","exit 0"]')
     fault.write_text('#!/bin/sh\nif [ "$1" = close ]; then exit 78; fi\nexec ' + realbr + ' "$@"\n')
-    assert rk('integrate', winning['id'], ok=False, extra={'RK_REAL_BR': str(fault)}).returncode
+    assert rk('integrate', winning['id'], ok=False, extra=faultpath).returncode
     saved = runstate(winning)
     assert saved['state'] == 'integrated' and not saved['closed']
     integrated = git(repo, 'rev-parse', 'rk/integration')

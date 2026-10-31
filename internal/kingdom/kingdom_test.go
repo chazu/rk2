@@ -109,7 +109,6 @@ func TestProviderGuard(t *testing.T) {
 		`"$RK_REAL_GIT" push`,
 		"$RK_REAL_GIT status",
 		"${RK_REAL_BR} list",
-		"RK_REAL_BR list",
 		"sudo -u root git push",
 		"nohup git push &",
 		"command git push",
@@ -243,28 +242,29 @@ func TestGuardedWorkerCannotControlOtherRuns(t *testing.T) {
 		}
 	}
 }
-func TestInheritedGuardIsNotTheRealExecutable(t *testing.T) {
+func TestStaleRunBinIsNotTheRealExecutable(t *testing.T) {
 	exe, e := os.Executable()
 	if e != nil {
 		t.Fatal(e)
 	}
-	guard, real := t.TempDir(), t.TempDir()
-	if e = os.Symlink(exe, filepath.Join(guard, "br")); e != nil {
-		t.Fatal(e)
+	// An older rk linked br and git to itself in ROOT/runs/ID/bin.
+	stale := filepath.Join(t.TempDir(), "runs", "old", "bin")
+	real := t.TempDir()
+	os.MkdirAll(stale, 0700)
+	for _, name := range []string{"br", "git"} {
+		if e = os.Symlink(exe, filepath.Join(stale, name)); e != nil {
+			t.Fatal(e)
+		}
+		if e = os.WriteFile(filepath.Join(real, name), []byte("#!/bin/sh\n"), 0700); e != nil {
+			t.Fatal(e)
+		}
 	}
-	if e = os.WriteFile(filepath.Join(real, "br"), []byte("#!/bin/sh\n"), 0700); e != nil {
-		t.Fatal(e)
-	}
-	t.Setenv("PATH", guard+string(os.PathListSeparator)+real)
-	t.Setenv("RK_REAL_BR", filepath.Join(guard, "br"))
+	t.Setenv("PATH", stale+string(os.PathListSeparator)+real)
 	if p := beadsExecutable(); p != filepath.Join(real, "br") {
-		t.Fatalf("resolved %q", p)
+		t.Fatalf("resolved br %q", p)
 	}
-	if e = GuardedBeads([]string{"list"}); e == nil || !strings.Contains(e.Error(), "guard itself") {
-		t.Fatalf("guard exec'd itself: %v", e)
-	}
-	if env := strings.Join(launchEnv(), " "); env != "-e RK_REAL_BR="+filepath.Join(real, "br") {
-		t.Fatalf("launch env %q", env)
+	if p := gitExecutable(); p != filepath.Join(real, "git") {
+		t.Fatalf("resolved git %q", p)
 	}
 }
 func TestRunPathDropsOtherRunsGuards(t *testing.T) {

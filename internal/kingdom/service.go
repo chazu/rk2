@@ -260,7 +260,7 @@ func (s *Store) launch(repo *Repo, r *Run) error {
 		return e
 	}
 	command := shellCommand([]string{exe, "_run", "--home", s.Root, r.ID, fmt.Sprint(r.Attempt)})
-	args := append([]string{"new-session", "-d", "-s", r.Session, "-c", r.Worktree}, launchEnv()...)
+	args := []string{"new-session", "-d", "-s", r.Session, "-c", r.Worktree}
 	cmd := exec.Command("tmux", append(args, command)...)
 	out, e := cmd.CombinedOutput()
 	if e != nil {
@@ -269,12 +269,6 @@ func (s *Store) launch(repo *Repo, r *Run) error {
 	return nil
 }
 
-// launchEnv pins the real br for a new session's launcher. tmux passes the
-// client's PATH but not its other variables, so the launcher would otherwise
-// resolve br again from a PATH that may hold a guard.
-func launchEnv() []string {
-	return []string{"-e", "RK_REAL_BR=" + beadsExecutable()}
-}
 func (s *Store) Resume(id, message string) (*Run, error) {
 	unlock, e := s.lock()
 	if e != nil {
