@@ -330,7 +330,15 @@ func Main(args []string, w io.Writer) error {
 		case "inbox":
 			value, e = s.Inbox(id, ack)
 		case "integrate":
-			value, e = s.Integrate(id)
+			var r *Run
+			r, e = s.Integrate(id)
+			value = r
+			if r != nil && r.IntegrationCheck == noIntegrationCheck {
+				repo, re := s.Repo(r.RepoID)
+				if re == nil {
+					fmt.Fprintln(os.Stderr, "rk: warning: no repository check ran during integration; none is configured. "+configureCheckHint(repo))
+				}
+			}
 		case "clean":
 			value, e = s.Clean(id, discard)
 		case "logs":

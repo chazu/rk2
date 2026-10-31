@@ -374,3 +374,30 @@ func TestTaskCloseArgumentsAndRole(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestIntegrationReportSeparatesOwnCheckFromRatReport(t *testing.T) {
+	repo := &Repo{Name: "demo"}
+	ratClaim := "NOT RUN: make check acceptance stage"
+	r := &Run{Target: "rk/integration", IntegratedCommit: "abc123", Checks: ratClaim,
+		IntegrationCheck: "passed: " + checkLabel([]string{"make", "check"})}
+	got := integrationReport(repo, r)
+	for _, want := range []string{"Integration check: [\"make\",\"check\"] passed.", "Rat-reported checks (not verified by integration): " + ratClaim} {
+		if !strings.Contains(got, want) {
+			t.Errorf("configured report %q lacks %q", got, want)
+		}
+	}
+	r.IntegrationCheck = noIntegrationCheck
+	got = integrationReport(repo, r)
+	for _, want := range []string{"Integration check: none configured for this repository; no repository check ran.", "rk config --repo demo --check JSON", "Rat-reported checks (not verified by integration): " + ratClaim} {
+		if !strings.Contains(got, want) {
+			t.Errorf("unconfigured report %q lacks %q", got, want)
+		}
+	}
+	if strings.Contains(got, "passed") || strings.Index(got, ratClaim) < strings.Index(got, "Rat-reported checks") {
+		t.Errorf("rat's checks presented as the integration result: %q", got)
+	}
+	r.Checks = ""
+	if got = integrationReport(repo, r); strings.Contains(got, "Rat-reported") {
+		t.Errorf("empty rat report still labelled: %q", got)
+	}
+}

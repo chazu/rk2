@@ -122,6 +122,24 @@ A target checked out in another worktree is refused. A successful integration
 closes the Beads ticket, allowing its dependents to become ready. The user's
 checkout, index, stash, and hooks are not changed.
 
+The integration comment and the run record report what integration itself
+verified, separately from the rat's report. `rk show RUN` exposes it as
+`integration_check`: `passed: ["make","check"]` when the configured check
+passed, `none configured` when the repository has no check, or `failed: ...`
+when the check failed and the run stayed ready. The comment says
+`Integration check: ["make","check"] passed.` or `Integration check: none
+configured for this repository; no repository check ran.` The rat's `--checks`
+text follows, labelled `Rat-reported checks (not verified by integration)`; it
+is never presented as integration's own result.
+
+A repository check is optional. Without one, integration still merges and
+closes the ticket, but `rk integrate` warns on stderr and the comment says
+plainly that no repository check ran. Configure one with:
+
+```sh
+rk config --repo NAME --check '["make","check"]'
+```
+
 Failed merges and checks preserve the worker's work and the candidate directory
 reported in the error. Inspect that candidate before manually removing it;
 rat-kingdom does not automatically discard conflicted candidates.

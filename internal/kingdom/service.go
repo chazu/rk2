@@ -331,6 +331,7 @@ func (s *Store) Resume(id, message string) (*Run, error) {
 	r.Commit = ""
 	r.Checks = ""
 	r.IntegratedCommit = ""
+	r.IntegrationCheck = ""
 	queue(r, "Resuming existing worktree. "+message, "king")
 	if e = s.launch(repo, r); e != nil {
 		r.Process = "not_started"

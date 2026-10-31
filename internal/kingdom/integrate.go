@@ -2,6 +2,7 @@ package kingdom
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -22,6 +23,31 @@ func targetFree(repo *Repo, branch string) error {
 		}
 	}
 	return nil
+}
+
+const noIntegrationCheck = "none configured"
+
+func checkLabel(check []string) string {
+	b, _ := json.Marshal(check)
+	return string(b)
+}
+
+// integrationReport states what integration itself verified, separately from
+// the rat's unverified --checks text.
+func integrationReport(repo *Repo, r *Run) string {
+	text := "Integrated locally into " + r.Target + " at " + r.IntegratedCommit + ". "
+	if r.IntegrationCheck == noIntegrationCheck {
+		text += "Integration check: none configured for this repository; no repository check ran. " + configureCheckHint(repo) + " "
+	} else {
+		text += "Integration check: " + strings.TrimPrefix(r.IntegrationCheck, "passed: ") + " passed. "
+	}
+	if strings.TrimSpace(r.Checks) != "" {
+		text += "Rat-reported checks (not verified by integration): " + r.Checks
+	}
+	return strings.TrimSpace(text)
+}
+func configureCheckHint(repo *Repo) string {
+	return "Configure one with: rk config --repo " + repo.Name + " --check JSON"
 }
 func (s *Store) Integrate(id string) (*Run, error) {
 	unlock, e := s.lock()
@@ -107,6 +133,7 @@ func (s *Store) Integrate(id string) (*Run, error) {
 	if _, e = gitOutput(dir, "merge", "--no-ff", "--no-edit", r.Commit); e != nil {
 		return fail(e)
 	}
+	r.IntegrationCheck = noIntegrationCheck
 	if len(repo.Check) > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()
@@ -122,8 +149,10 @@ func (s *Store) Integrate(id string) (*Run, error) {
 		e = cmd.Run()
 		f.Close()
 		if e != nil {
+			r.IntegrationCheck = "failed: " + checkLabel(repo.Check) + ": " + e.Error()
 			return fail(fmt.Errorf("integration check: %w", e))
 		}
+		r.IntegrationCheck = "passed: " + checkLabel(repo.Check)
 	}
 	candidate, e := refOID(dir, "HEAD")
 	if e != nil {
@@ -147,7 +176,7 @@ func (s *Store) Integrate(id string) (*Run, error) {
 	}
 	r.State = "integrated"
 	r.Error = ""
-	queue(r, "Integrated locally into "+r.Target+" at "+candidate+". "+r.Checks, "king")
+	queue(r, integrationReport(repo, r), "king")
 	if e = s.saveRun(r); e != nil {
 		return r, e
 	}

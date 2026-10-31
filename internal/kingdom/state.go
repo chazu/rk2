@@ -56,6 +56,7 @@ type Run struct {
 	Updated          time.Time `json:"updated"`
 	Commit           string    `json:"commit,omitempty"`
 	IntegratedCommit string    `json:"integrated_commit,omitempty"`
+	IntegrationCheck string    `json:"integration_check,omitempty"`
 	Summary          string    `json:"summary,omitempty"`
 	Checks           string    `json:"checks,omitempty"`
 	Error            string    `json:"error,omitempty"`
