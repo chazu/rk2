@@ -59,7 +59,7 @@ func (s *Store) Integrate(id string) (*Run, error) {
 	if e != nil {
 		return nil, e
 	}
-	repo, e := s.Repo(r.RepoID)
+	repo, e := s.runRepo(r)
 	if e != nil {
 		return nil, e
 	}
@@ -207,7 +207,7 @@ func (s *Store) Clean(id string, discard bool) (*Run, error) {
 	if e != nil {
 		return nil, e
 	}
-	repo, e := s.Repo(r.RepoID)
+	repo, e := s.runRepo(r)
 	if e != nil {
 		return nil, e
 	}

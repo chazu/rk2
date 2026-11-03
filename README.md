@@ -37,7 +37,7 @@ From a repository with an initial commit:
 ```sh
 rk init --check '["go","test","./..."]'
 rk task create "Implement the login validation" --description "Acceptance criteria..."
-rk spawn king
+rk spawn king                        # from any directory
 rk attach king                       # or: rk at king
 ```
 
@@ -262,11 +262,30 @@ using `--repo`. `rk spawn king` refuses while a king exists; resume a stopped
 king with `rk resume king`, or `rk dismiss king` to replace it. `king` works as a run name in any command, and rats
 cannot use it.
 
+The king belongs to no repository. `rk spawn king` works from any directory
+and refuses `--repo`. The king runs in its own working directory,
+`$RK_HOME/king`, which is not a repository, and its agent command is global:
+
+```sh
+rk config --king --command '["claude","{prompt}"]'   # the default
+```
+
+The setting is stored in `$RK_HOME/king.json` and applies at the king's next
+launch. Repository `--command` settings apply to that repository's rats only.
+
 The king's prompt names no repository. It tells the king to discover
-repositories with `rk repos` and to pass `--repo NAME`. Its working directory
-is the repository it was launched from, but its environment carries no
-`BEADS_DIR` or `RK_REPO`, so it reaches tasks through `rk task --repo NAME`.
+repositories with `rk repos` and to pass `--repo NAME`. Its environment carries
+no `BEADS_DIR` or `RK_REPO`, so it reaches tasks through `rk task --repo NAME`;
+outside a repository, a repository-scoped command without `--repo` is refused.
 Rats keep both, since each one serves a single repository.
+
+Instead of one repository's hooks, the king's session hooks directory holds
+forwarders for client-side hooks (`pre-commit`, `commit-msg`, `post-checkout`
+and the like). Each runs the hook of whichever repository Git is working in,
+so the king's commits honour each repository's own hooks. Server-side and
+`reference-transaction` hooks are not forwarded. A king launched from a
+repository by an older rk moves to `$RK_HOME/king` when it is next resumed
+or restarted; its old working directory is left as it was.
 
 The king's role instructions are embedded in `rk`. To customize them, put a
 replacement at `$RK_HOME/instructions/king.txt` (default

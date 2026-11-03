@@ -35,11 +35,11 @@ def command(args, cwd=None, ok=True, extra=None):
         raise AssertionError(f'{args}: {p.returncode}\n{p.stdout}\n{p.stderr}')
     return p
 
-def rk(*args, ok=True, extra=None):
-    return command([BINARY, *args], ok=ok, extra=extra)
+def rk(*args, ok=True, extra=None, cwd=None):
+    return command([BINARY, *args], ok=ok, extra=extra, cwd=cwd)
 
-def data(*args):
-    return json.loads(rk(*args).stdout)
+def data(*args, cwd=None):
+    return json.loads(rk(*args, cwd=cwd).stdout)
 
 def git(repo, *args):
     return command(['git', '-C', str(repo), *args]).stdout.strip()
@@ -425,7 +425,15 @@ printf 'guards-passed\\n' > guard-evidence.txt
         raise AssertionError(f'{text!r} never typed into {run["name"]}: {path.read_text() if path.exists() else ""}')
     nudge = fixture('nudge')
     rk('config', '--repo', 'nudge', '--command', json.dumps(['python3', str(echo)]))
-    king = data('spawn', 'king', '--repo', 'nudge')
+    # The king belongs to no repository: it spawns from any directory, runs in
+    # its own, and uses the global king command rather than a repository's.
+    rk('config', '--king', '--command', json.dumps(['python3', str(echo)]))
+    assert 'without --repo' in rk('spawn', 'king', '--repo', 'nudge', ok=False).stderr
+    outside = root / 'not-a-repo'
+    outside.mkdir()
+    king = data('spawn', 'king', cwd=outside)
+    assert king['repo_id'] == '' and king['branch'] == '', king
+    assert Path(king['worktree']).resolve() == (root / 'state' / 'king').resolve(), king
     rat = data('spawn', 'rat', '--repo', 'nudge', '--task', task('nudge', 'nudged work'))
     # An unsent draft is cut to the start-of-line and kill-to-end keys before
     # the notice. The scripted agent's cooked terminal records them literally.
@@ -446,12 +454,23 @@ printf 'guards-passed\\n' > guard-evidence.txt
     print('PASS notices typed into rat and king sessions reach the agent')
     restarted = data('restart', 'king')
     assert restarted['id'] == king['id'] and restarted['attempt'] == 2
+    # A king launched from a repository by an older rk leaves it on resume,
+    # without touching that repository.
+    stopped(restarted)
+    legacy_path = root / 'state' / 'runs' / king['id'] / 'run.json'
+    legacy = json.loads(legacy_path.read_text())
+    nudge_id = next(r['id'] for r in data('repos') if r['name'] == 'nudge')
+    legacy.update(repo_id=nudge_id, worktree=str(nudge), branch='', target='rk/integration')
+    legacy_path.write_text(json.dumps(legacy))
+    resumed = data('resume', 'king', cwd=outside)
+    assert resumed['repo_id'] == '' and resumed['target'] == '' and resumed['worktree'] == king['worktree'], resumed
+    assert git(nudge, 'status', '--porcelain') == ''
     dismissed = data('dismiss', 'king')
     assert dismissed['state'] == 'dismissed' and dismissed['process'] == 'stopped'
-    fresh = data('spawn', 'king', '--repo', 'nudge')
+    fresh = data('spawn', 'king', cwd=outside)
     assert fresh['id'] != king['id'] and data('show', 'king')['id'] == fresh['id']
     data('dismiss', 'king')
-    print('PASS king restart, dismissal and fresh spawn')
+    print('PASS king spawns outside any repository; restart, legacy resume, dismissal and fresh spawn')
     # A workspace without its own issue_prefix inherits the user's
     # ~/.beads/config.yaml. The decoy home lives inside this temp root.
     home = root / 'home'

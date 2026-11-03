@@ -3,6 +3,7 @@ package kingdom
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -420,11 +421,17 @@ func TestOneKingSystemWide(t *testing.T) {
 	if !strings.Contains(out.String(), `"id": "old"`) {
 		t.Fatalf("resolved wrong king: %s", out.String())
 	}
-	if _, e := s.Spawn("other", "king", "", ""); e == nil || !strings.Contains(e.Error(), "rk attach king") {
-		t.Fatalf("second king allowed from another repo: %v", e)
+	if _, e := s.ConfigKing([]string{"true"}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := s.Spawn("other", "king", "", ""); e == nil || !strings.Contains(e.Error(), "without --repo") {
+		t.Fatalf("king bound to a repository: %v", e)
+	}
+	if _, e := s.Spawn("", "king", "", ""); e == nil || !strings.Contains(e.Error(), "rk attach king") {
+		t.Fatalf("second king allowed: %v", e)
 	}
 	s.saveRun(&Run{ID: "old", Name: "king-demo", Role: "king", RepoID: "r1", Process: "exited", Created: now.Add(-time.Hour)})
-	if _, e := s.Spawn("demo", "king", "", ""); e == nil || !strings.Contains(e.Error(), "rk resume king") {
+	if _, e := s.Spawn("", "king", "", ""); e == nil || !strings.Contains(e.Error(), "rk resume king") {
 		t.Fatalf("stopped king not resumed: %v", e)
 	}
 	if _, e := s.Spawn("demo", "rat", "t1", "king"); e == nil || !strings.Contains(e.Error(), "reserved") {
@@ -460,6 +467,103 @@ func TestDismissedKingMakesRoomForAFreshOne(t *testing.T) {
 	}
 	if _, e := s.Resume("k1", ""); e == nil || !strings.Contains(e.Error(), "finalized") {
 		t.Fatalf("dismissed king resumed: %v", e)
+	}
+}
+func TestGeneratedRatNamesRetryOnCollision(t *testing.T) {
+	ids := []string{"abcd00000001", "abcd00000002", "ef0100000003"}
+	next := func() string { id := ids[0]; ids = ids[1:]; return id }
+	taken := ratName("abcd99999999")
+	id, name, e := pickRatName(func(n string) bool { return n == taken }, next)
+	if e != nil || id != "ef0100000003" || name != ratName("ef0100000003") {
+		t.Fatalf("got %q %q %v", id, name, e)
+	}
+	if _, _, e = pickRatName(func(string) bool { return true }, newID); e == nil || !strings.Contains(e.Error(), "--name") {
+		t.Fatalf("endless collisions not refused: %v", e)
+	}
+}
+func TestKingConfigIsGlobal(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	k, e := s.KingConfig()
+	if e != nil || strings.Join(k.Command, " ") != "claude {prompt}" {
+		t.Fatalf("default king command: %+v %v", k, e)
+	}
+	if _, e = s.ConfigKing([]string{}); e == nil {
+		t.Fatal("empty king command accepted")
+	}
+	var out bytes.Buffer
+	if e = Main([]string{"config", "--king", "--repo", "demo", "--home", s.Root}, &out); e == nil || !strings.Contains(e.Error(), "only --command") {
+		t.Fatalf("king config took a repository: %v", e)
+	}
+	if e = Main([]string{"config", "--king", "--command", `["agent","{prompt_file}"]`, "--home", s.Root}, &out); e != nil {
+		t.Fatal(e)
+	}
+	r := &Run{ID: "k1", Role: "king"}
+	repo, command, e := s.agentCommand(r)
+	if e != nil || repo != nil || strings.Join(command, " ") != "agent {prompt_file}" {
+		t.Fatalf("king launch command: %v %v %v", repo, command, e)
+	}
+	if _, e = s.runRepo(r); e == nil {
+		t.Fatal("king resolved a repository")
+	}
+}
+
+// The king commits in many repositories, so its hooks run each repository's
+// own hook rather than those of the one it was launched from.
+func TestKingHooksDispatchToCurrentRepository(t *testing.T) {
+	s, _ := Open(t.TempDir())
+	king := &Run{ID: "k1", Role: "king", Worktree: s.kingDir()}
+	os.MkdirAll(filepath.Join(s.runDir("k1"), "hooks", "stale"), 0700)
+	os.WriteFile(filepath.Join(s.runDir("k1"), "hooks", "update"), []byte("#!/bin/sh\nexit 1\n"), 0700)
+	dest, e := hooks(s, king, nil, "")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = os.Stat(filepath.Join(dest, "update")); !os.IsNotExist(e) {
+		t.Fatal("stale hook from an earlier launch kept")
+	}
+	home := t.TempDir()
+	base := []string{"HOME=" + home, "XDG_CONFIG_HOME=" + home, "GIT_CONFIG_NOSYSTEM=1", "PATH=" + os.Getenv("PATH")}
+	session := append(base, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0="+dest)
+	git := func(dir string, env []string, args ...string) error {
+		c := exec.Command("git", args...)
+		c.Dir, c.Env = dir, env
+		if out, e := c.CombinedOutput(); e != nil {
+			return fmt.Errorf("git %v: %v: %s", args, e, out)
+		}
+		return nil
+	}
+	repo := func(hook string) string {
+		dir := t.TempDir()
+		for _, args := range [][]string{{"init", "-q"}, {"config", "user.name", "t"}, {"config", "user.email", "t@t"}} {
+			if e := git(dir, base, args...); e != nil {
+				t.Fatal(e)
+			}
+		}
+		if hook != "" {
+			os.WriteFile(filepath.Join(dir, ".git", "hooks", "pre-commit"), []byte("#!/bin/sh\n"+hook+"\n"), 0700)
+		}
+		return dir
+	}
+	marks := repo(`touch "$(git rev-parse --show-toplevel)/.hook-ran"`)
+	refuses := repo("exit 1")
+	plain := repo("")
+	if e = git(marks, session, "commit", "-q", "--allow-empty", "-m", "a"); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = os.Stat(filepath.Join(marks, ".hook-ran")); e != nil {
+		t.Fatal("repository's own pre-commit did not run")
+	}
+	if e = git(refuses, session, "commit", "-q", "--allow-empty", "-m", "b"); e == nil {
+		t.Fatal("refusing pre-commit of the current repository was skipped")
+	}
+	if e = git(plain, session, "commit", "-q", "--allow-empty", "-m", "c"); e != nil {
+		t.Fatalf("repository without hooks: %v", e)
+	}
+	if _, e = os.Stat(filepath.Join(plain, ".hook-ran")); e == nil {
+		t.Fatal("another repository's hook ran")
+	}
+	if _, e = os.Stat(filepath.Join(dest, "pre-push")); e != nil {
+		t.Fatal("king lost the pre-push refusal")
 	}
 }
 func TestKingPromptNamesNoRepository(t *testing.T) {

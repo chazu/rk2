@@ -19,7 +19,9 @@ rk init [PATH] [--name NAME] [--target BRANCH] [--max-rats N] [--prefix NAME]
 rk repos                               includes each workspace's issue prefix
 rk config [--repo NAME] [--command JSON] [--check JSON] [--max-rats N]
           [--prefix NAME]               new task IDs only; existing IDs stay
-rk spawn rat|king [--repo NAME] [--task ID] [--name NAME]
+rk config --king [--command JSON]       the king's agent command, for any repository
+rk spawn rat [--repo NAME] [--task ID] [--name NAME]
+rk spawn king                          from anywhere; the king has no repository
 rk list [--repo NAME]                    all runs if --repo is omitted
 rk show RUN
 rk attach|at RUN                       RUN may be 'king': one king, system-wide
@@ -134,7 +136,7 @@ func Main(args []string, w io.Writer) error {
 	jsonOut := fs.Bool("json", false, "JSON output")
 	var name, task, target, command, check, prefix, message, summary, checks, remote, branch, request string
 	var max, ack int
-	var discard bool
+	var discard, king bool
 	var interval string
 	switch cmd {
 	case "init":
@@ -145,6 +147,7 @@ func Main(args []string, w io.Writer) error {
 		fs.IntVar(&max, "max-rats", 4, "capacity")
 		fs.StringVar(&prefix, "prefix", "", "Beads issue ID prefix")
 	case "config":
+		fs.BoolVar(&king, "king", false, "configure the king, not a repository")
 		fs.StringVar(&command, "command", "", "agent argv JSON")
 		fs.StringVar(&check, "check", "", "check argv JSON")
 		fs.IntVar(&max, "max-rats", 0, "capacity")
@@ -270,6 +273,11 @@ func Main(args []string, w io.Writer) error {
 				path = pos[0]
 			}
 			value, e = s.Init(path, name, target, argv, test, max, prefix)
+		} else if king {
+			if *repoName != "" || check != "" || max != 0 || prefix != "" {
+				return errors.New("rk config --king takes only --command; the king belongs to no repository")
+			}
+			value, e = s.ConfigKing(argv)
 		} else {
 			value, e = s.Config(*repoName, argv, test, max, prefix)
 		}
@@ -344,7 +352,7 @@ func Main(args []string, w io.Writer) error {
 			r, e = s.Integrate(id)
 			value = r
 			if r != nil && r.IntegrationCheck == noIntegrationCheck {
-				repo, re := s.Repo(r.RepoID)
+				repo, re := s.runRepo(r)
 				if re == nil {
 					fmt.Fprintln(os.Stderr, "rk: warning: no repository check ran during integration; none is configured. "+configureCheckHint(repo))
 				}
@@ -368,9 +376,11 @@ func Main(args []string, w io.Writer) error {
 			if e != nil {
 				return e
 			}
-			repo, e := s.Repo(r.RepoID)
-			if e != nil {
-				return e
+			var repo *Repo
+			if r.Role != "king" {
+				if repo, e = s.runRepo(r); e != nil {
+					return e
+				}
 			}
 			text, e := s.Prompt(repo, r)
 			if e != nil {

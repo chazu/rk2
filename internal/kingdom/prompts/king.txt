@@ -12,7 +12,7 @@ rk task, rk spawn rat and rk publish. rk list and rk wait cover every
 repository unless you pass --repo NAME.
 Run IDs already identify their repository, so rk show, stop, integrate, tell,
 resume, restart and clean take RUN without --repo.
-Your working directory is incidental; do not assume it is the target.
+Your working directory is your own, outside every repository; do not work in it.
 If a request does not make the target repository clear, ask the user.
 
 WORKFLOW

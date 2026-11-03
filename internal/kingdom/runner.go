@@ -186,6 +186,23 @@ func (s *Store) runPath(r *Run) string {
 	}
 	return strings.Join(dirs, string(os.PathListSeparator))
 }
+
+// agentCommand returns the king's global command, or a rat's repository and
+// that repository's command.
+func (s *Store) agentCommand(r *Run) (*Repo, []string, error) {
+	if r.Role == "king" {
+		k, e := s.KingConfig()
+		if e != nil {
+			return nil, nil, e
+		}
+		return nil, k.Command, nil
+	}
+	repo, e := s.runRepo(r)
+	if e != nil {
+		return nil, nil, e
+	}
+	return repo, repo.Command, nil
+}
 func (s *Store) RunProcess(id string, attempt int) error {
 	r, e := s.Run(id)
 	if e != nil {
@@ -209,7 +226,7 @@ func (s *Store) RunProcess(id string, attempt int) error {
 		unlock()
 		return errors.New("stale launcher attempt")
 	}
-	repo, e := s.Repo(r.RepoID)
+	repo, command, e := s.agentCommand(r)
 	if e != nil {
 		unlock()
 		return e
@@ -225,7 +242,7 @@ func (s *Store) RunProcess(id string, attempt int) error {
 	if e != nil {
 		return e
 	}
-	args := append([]string{}, repo.Command...)
+	args := append([]string{}, command...)
 	for i, a := range args {
 		a = strings.ReplaceAll(a, "{prompt}", string(prompt))
 		a = strings.ReplaceAll(a, "{prompt_file}", filepath.Join(s.runDir(id), "prompt.txt"))

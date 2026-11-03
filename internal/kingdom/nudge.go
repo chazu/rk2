@@ -63,7 +63,7 @@ func (s *Store) nudgeLoop(id string, attempt int, done <-chan struct{}) {
 // ratNotice reports task comments from others newer than both the rat's
 // acknowledged cursor and the last comment it was told about.
 func (s *Store) ratNotice(r *Run, told int, setTold func(int)) (string, func()) {
-	repo, e := s.Repo(r.RepoID)
+	repo, e := s.runRepo(r)
 	if e != nil || r.Task == "" {
 		return "", nil
 	}
@@ -111,7 +111,7 @@ func (s *Store) kingNotice(seen map[string]string) (string, func()) {
 			status = "process " + r.Process
 		}
 		repo := r.RepoID
-		if rp, e := s.Repo(r.RepoID); e == nil {
+		if rp, e := s.runRepo(r); e == nil {
 			repo = rp.Name
 		}
 		news = append(news, fmt.Sprintf("%s (%s) %s", r.Name, repo, status))

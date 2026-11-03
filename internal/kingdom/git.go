@@ -184,10 +184,37 @@ func Forward(name string, args []string) error {
 	}
 	return e
 }
+
+// clientHooks are the hooks the king forwards to whichever repository it is
+// working in. Server-side and per-ref hooks are not forwarded.
+var clientHooks = []string{"applypatch-msg", "pre-applypatch", "post-applypatch", "pre-commit", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-checkout", "post-merge", "post-rewrite", "pre-auto-gc"}
+
 func hooks(s *Store, r *Run, repo *Repo, exe string) (string, error) {
 	dest := filepath.Join(s.runDir(r.ID), "hooks")
+	if r.Role == "king" {
+		// Rebuilt from scratch: a king launched from a repository before kings
+		// left them holds wrappers bound to that repository's hooks.
+		if e := os.RemoveAll(dest); e != nil {
+			return "", e
+		}
+	}
 	if e := os.MkdirAll(dest, 0700); e != nil {
 		return "", e
+	}
+	if r.Role == "king" {
+		// The king works in every registered repository, so each hook finds
+		// the current repository's own hook when it runs. The session's
+		// core.hooksPath override is dropped only for that lookup.
+		for _, name := range clientHooks {
+			body := "#!/bin/sh\n" +
+				"dir=$(unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || exit 0\n" +
+				"[ \"$dir\" != " + quote(dest) + " ] && [ -f \"$dir/" + name + "\" ] && [ -x \"$dir/" + name + "\" ] || exit 0\n" +
+				"exec \"$dir/" + name + "\" \"$@\"\n"
+			if e := atomicFile(filepath.Join(dest, name), []byte(body), 0700); e != nil {
+				return "", e
+			}
+		}
+		return dest, refusePush(dest)
 	}
 	// Resolve existing hooks without modifying any repository configuration.
 	original, e := gitOutput(r.Worktree, "rev-parse", "--path-format=absolute", "--git-path", "hooks")
@@ -217,9 +244,9 @@ func hooks(s *Store, r *Run, repo *Repo, exe string) (string, error) {
 			return "", e
 		}
 	}
+	return dest, refusePush(dest)
+}
+func refusePush(dest string) error {
 	body := "#!/bin/sh\necho 'rat-kingdom: direct pushes are disabled; ask the king to publish explicitly' >&2\nexit 1\n"
-	if e = atomicFile(filepath.Join(dest, "pre-push"), []byte(body), 0700); e != nil {
-		return "", e
-	}
-	return dest, nil
+	return atomicFile(filepath.Join(dest, "pre-push"), []byte(body), 0700)
 }

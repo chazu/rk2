@@ -60,7 +60,7 @@ func (s *Store) Init(path, name, target string, command, check []string, max int
 		return nil, errors.New("max-rats must be positive")
 	}
 	if len(command) == 0 {
-		command = []string{"claude", "{prompt}"}
+		command = append([]string{}, defaultCommand...)
 	}
 	r := &Repo{ID: id, Name: name, Path: root, CommonDir: common, BeadsDir: filepath.Join(root, ".beads"), Target: target, Command: command, MaxRats: max, Check: check}
 	if e = excludeLocalBeads(common); e != nil {
@@ -85,6 +85,25 @@ func (s *Store) Init(path, name, target string, command, check []string, max int
 	}
 	v := viewRepo(r)
 	return &v, nil
+}
+
+// ConfigKing sets the king's agent command, stored in RK_HOME/king.json. It
+// applies the next time the king launches; with no command it only reports.
+func (s *Store) ConfigKing(command []string) (*King, error) {
+	unlock, e := s.lock()
+	if e != nil {
+		return nil, e
+	}
+	defer unlock()
+	if command != nil {
+		if len(command) == 0 {
+			return nil, errors.New("command cannot be empty")
+		}
+		if e = atomicJSON(filepath.Join(s.Root, "king.json"), &King{Command: command}); e != nil {
+			return nil, e
+		}
+	}
+	return s.KingConfig()
 }
 
 // Config changes rk's settings for a repository. A prefix is written to the
@@ -128,20 +147,35 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 		return nil, e
 	}
 	defer unlock()
-	repo, e := s.Repo(repoName)
-	if e != nil {
-		return nil, e
-	}
 	if role != "rat" && role != "king" {
 		return nil, errors.New("role must be rat or king")
+	}
+	// The king belongs to no repository: it runs from its own directory with
+	// the global agent command, so it can be spawned from anywhere.
+	var repo *Repo
+	var command []string
+	if role == "king" {
+		if repoName != "" {
+			return nil, errors.New("the king serves every repository; spawn it without --repo")
+		}
+		k, e := s.KingConfig()
+		if e != nil {
+			return nil, e
+		}
+		command = k.Command
+	} else {
+		if repo, e = s.Repo(repoName); e != nil {
+			return nil, e
+		}
+		command = repo.Command
 	}
 	if _, e = exec.LookPath("tmux"); e != nil {
 		return nil, e
 	}
-	if len(repo.Command) == 0 {
+	if len(command) == 0 {
 		return nil, errors.New("no agent command configured")
 	}
-	if _, e = exec.LookPath(repo.Command[0]); e != nil {
+	if _, e = exec.LookPath(command[0]); e != nil {
 		return nil, e
 	}
 	rs, e := s.Runs()
@@ -157,7 +191,7 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 			}
 			return nil, errors.New("king already exists; use rk resume king, or rk dismiss king for a fresh one")
 		}
-		if r.RepoID == repo.ID && r.Role == "rat" && activeState(r) {
+		if role == "rat" && r.Role == "rat" && r.RepoID == repo.ID && activeState(r) {
 			n++
 		}
 	}
@@ -179,12 +213,20 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 			return nil, errors.New("no unassigned ready tasks")
 		}
 	}
+	inUse := func(name string) bool {
+		for _, r := range rs {
+			if r.Name == name && r.State != "cleaned" && r.State != "discarded" && r.State != "dismissed" {
+				return true
+			}
+		}
+		return false
+	}
 	id := newID()
-	if name == "" {
-		names := []string{"Pip", "Moss", "Crumb", "Nettle", "Pebble", "Clover", "Soot", "Thimble"}
-		name = names[int(id[0])%len(names)] + "-" + id[:4]
-		if role == "king" {
-			name = "king"
+	if name == "" && role == "king" {
+		name = "king"
+	} else if name == "" {
+		if id, name, e = pickRatName(inUse, newID); e != nil {
+			return nil, e
 		}
 	}
 	if !safeID(name) || strings.ContainsAny(name, " \t\n:") {
@@ -193,16 +235,16 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 	if role == "rat" && name == "king" {
 		return nil, errors.New("the name king is reserved")
 	}
-	for _, r := range rs {
-		if r.Name == name && r.State != "cleaned" && r.State != "discarded" && r.State != "dismissed" {
-			return nil, errors.New("agent name already in use")
-		}
+	if inUse(name) {
+		return nil, errors.New("agent name already in use")
 	}
-	r := &Run{ID: id, Name: name, Role: role, RepoID: repo.ID, Task: task, State: "preparing", Process: "not_started", Created: time.Now().UTC(), Target: repo.Target, Branch: "rats/" + name + "/" + id, Worktree: filepath.Join(s.Root, "worktrees", repo.ID, id), Session: "rk-" + id, Attempt: 1}
-	if role == "king" {
-		r.Task = ""
-		r.Worktree = repo.Path
-		r.Branch = ""
+	r := &Run{ID: id, Name: name, Role: role, State: "preparing", Process: "not_started", Created: time.Now().UTC(), Worktree: s.kingDir(), Session: "rk-" + id, Attempt: 1}
+	if role == "rat" {
+		r.RepoID = repo.ID
+		r.Task = task
+		r.Target = repo.Target
+		r.Branch = "rats/" + name + "/" + id
+		r.Worktree = filepath.Join(s.Root, "worktrees", repo.ID, id)
 	}
 	if e = s.saveRun(r); e != nil {
 		return nil, e
@@ -236,6 +278,24 @@ func (s *Store) Spawn(repoName, role, task, name string) (*Run, error) {
 	}
 	return r, nil
 }
+
+// ratName is a recognizable name drawn from a run ID.
+func ratName(id string) string {
+	names := []string{"Pip", "Moss", "Crumb", "Nettle", "Pebble", "Clover", "Soot", "Thimble"}
+	return names[int(id[0])%len(names)] + "-" + id[:4]
+}
+
+// pickRatName draws run IDs until the generated name is free. A name carries
+// only four hex digits of its ID, so it can match a live run's.
+func pickRatName(inUse func(string) bool, next func() string) (string, string, error) {
+	for attempt := 0; attempt < 16; attempt++ {
+		id := next()
+		if name := ratName(id); !inUse(name) {
+			return id, name, nil
+		}
+	}
+	return "", "", errors.New("could not pick an unused rat name; pass --name")
+}
 func (s *Store) launch(repo *Repo, r *Run) error {
 	exe, e := os.Executable()
 	if e != nil {
@@ -244,6 +304,11 @@ func (s *Store) launch(repo *Repo, r *Run) error {
 	exe, e = filepath.EvalSymlinks(exe)
 	if e != nil {
 		return e
+	}
+	if r.Role == "king" {
+		if e = os.MkdirAll(r.Worktree, 0700); e != nil {
+			return e
+		}
 	}
 	if e = s.prepare(repo, r, exe); e != nil {
 		return e
@@ -279,9 +344,11 @@ func (s *Store) Resume(id, message string) (*Run, error) {
 	if e != nil {
 		return nil, e
 	}
-	repo, e := s.Repo(r.RepoID)
-	if e != nil {
-		return nil, e
+	var repo *Repo
+	if r.Role != "king" {
+		if repo, e = s.runRepo(r); e != nil {
+			return nil, e
+		}
 	}
 	if r.State == "integrated" || r.State == "cleaned" || r.State == "discarded" || r.State == "dismissed" {
 		return nil, errors.New("cannot resume a finalized run")
@@ -334,6 +401,11 @@ func (s *Store) Resume(id, message string) (*Run, error) {
 				return nil, e
 			}
 		}
+	}
+	if r.Role == "king" {
+		// A king launched from a repository before kings left them moves to
+		// its own directory; the repository itself is untouched.
+		r.RepoID, r.Worktree, r.Branch, r.Target = "", s.kingDir(), "", ""
 	}
 	r.Attempt++
 	r.State = "working"
@@ -402,12 +474,12 @@ func (s *Store) Result(id, outcome, summary, checks string) (*Run, error) {
 	if e != nil {
 		return nil, e
 	}
-	repo, e := s.Repo(r.RepoID)
-	if e != nil {
-		return nil, e
-	}
 	if r.Role != "rat" {
 		return nil, errors.New("only rats submit task results")
+	}
+	repo, e := s.runRepo(r)
+	if e != nil {
+		return nil, e
 	}
 	if r.State != "working" && r.State != "blocked" && r.State != "ready" {
 		return nil, fmt.Errorf("cannot submit from %s", r.State)
@@ -472,12 +544,12 @@ func (s *Store) Tell(id, text string) error {
 	if e != nil {
 		return e
 	}
-	repo, e := s.Repo(r.RepoID)
-	if e != nil {
-		return e
-	}
 	if r.Task == "" {
 		return errors.New("use task comments for rats; attach to the king for instructions")
+	}
+	repo, e := s.runRepo(r)
+	if e != nil {
+		return e
 	}
 	if text == "" {
 		return errors.New("message required")
@@ -502,12 +574,12 @@ func (s *Store) Inbox(id string, ack int) ([]Comment, error) {
 	if e != nil {
 		return nil, e
 	}
-	repo, e := s.Repo(r.RepoID)
-	if e != nil {
-		return nil, e
-	}
 	if r.Task == "" {
 		return nil, errors.New("king uses rk list and task comments")
+	}
+	repo, e := s.runRepo(r)
+	if e != nil {
+		return nil, e
 	}
 	cs, e := comments(repo, r.Task)
 	if e != nil {
@@ -559,7 +631,14 @@ func (s *Store) Reconcile() ([]*Run, error) {
 				r.Error = "launcher disappeared without an exit receipt; inspect and stop before resuming; work preserved"
 			}
 		}
-		repo, e := s.Repo(r.RepoID)
+		// Kings have no task, so nothing to deliver or close.
+		if r.Role == "king" {
+			if e = s.saveRun(r); e != nil {
+				return nil, e
+			}
+			continue
+		}
+		repo, e := s.runRepo(r)
 		if e != nil {
 			return nil, e
 		}

@@ -152,6 +152,38 @@ func safeID(id string) bool {
 	return id != "" && filepath.Base(id) == id && id != "." && id != ".." && !strings.ContainsAny(id, "\\\x00")
 }
 func (s *Store) runDir(id string) string { return filepath.Join(s.Root, "runs", id) }
+
+// King configures the system-wide king, which belongs to no repository.
+type King struct {
+	Command []string `json:"command"`
+}
+
+var defaultCommand = []string{"claude", "{prompt}"}
+
+// kingDir is the king's working directory: its own place under RK_HOME, not
+// any registered repository, so it starts from anywhere and outlives them all.
+func (s *Store) kingDir() string { return filepath.Join(s.Root, "king") }
+
+// KingConfig reads RK_HOME/king.json, falling back to the default command.
+func (s *Store) KingConfig() (*King, error) {
+	k := &King{}
+	if e := readJSON(filepath.Join(s.Root, "king.json"), k); e != nil && !errors.Is(e, os.ErrNotExist) {
+		return nil, e
+	}
+	if len(k.Command) == 0 {
+		k.Command = append([]string{}, defaultCommand...)
+	}
+	return k, nil
+}
+
+// runRepo returns the repository a rat serves. Kings have none; looking one up
+// with an empty ID would fall back to the current directory's repository.
+func (s *Store) runRepo(r *Run) (*Repo, error) {
+	if r.RepoID == "" {
+		return nil, fmt.Errorf("run %s belongs to no repository", r.ID)
+	}
+	return s.Repo(r.RepoID)
+}
 func (s *Store) saveRun(r *Run) error {
 	if !safeID(r.ID) {
 		return errors.New("invalid run ID")
