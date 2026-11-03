@@ -1,6 +1,9 @@
-.PHONY: build test check acceptance
+.PHONY: build install test check acceptance
 build:
 	go build -o bin/rk ./cmd/rk
+
+install:
+	go install ./cmd/rk
 
 test:
 	go test -race ./...

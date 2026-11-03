@@ -27,8 +27,9 @@ real Git, Beads, and an isolated tmux server. Acceptance also requires Python 3.
 It uses disposable repositories and scripted agents, with no model calls or
 remote pushes. `make test` runs just the Go tests.
 
-The executable is `bin/rk`. Put that binary on your PATH if desired; no global
-installation is performed by the build.
+The executable is `bin/rk`. `make build` performs no global installation;
+`make install` runs `go install ./cmd/rk`, placing `rk` in `$(go env GOBIN)`
+(or `$(go env GOPATH)/bin`).
 
 ## Start a kingdom
 
